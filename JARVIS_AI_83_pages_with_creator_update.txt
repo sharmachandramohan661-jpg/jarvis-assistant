@@ -1,0 +1,3580 @@
+JARVIS AI Voice Assistant —
+Production-Ready Master PRD &
+Code Blueprint
+> **Role for AI Coding Tools (Codex, Claude, Antigravity, Cursor, etc.):**
+> You are an expert Principal Android & Systems Engineer. Your task is to build or recreate a
+100% exact, production-ready replica of the **JARVIS Voice Assistant** application from
+scratch.
+>
+> **THE GOLDEN GUARANTEE (P0 Acceptance Criteria):**
+> When this app is compiled and installed on an Android device:
+> 1. The user navigates to **Settings** and enters their **Google Gemini API Key**.
+> 2. The user taps **Save** and returns to the Home screen.
+> 3. The user taps the glowing **Power Button**.
+> 4. The user speaks into the microphone (e.g., *"Hello Jarvis, can you hear me?"*).
+> 5. **THE ASSISTANT MUST TALK BACK IN REAL TIME** with clear spoken audio via
+Google Gemini Live WebSocket (`bidiGenerateContent`), with low latency (<500ms), dynamic
+audio visualizer reactivity, and instant barge-in interruption.
+>
+> UI/UX design is modern, sleek, and dark sci-fi glassmorphic. Every single file, protocol rule,
+audio format, and line of code is provided below in complete, unabridged, copy-pasteable form.
+Do NOT omit any code, do NOT use placeholders or `// TODO` comments.
+
+---
+
+
+
+
+1. Product Overview & Core Architecture
+
+
+A. Specifications
+- **App Name:** JARVIS Assistant
+- **Package Name:** `com.jarvis.assistant`
+- **Platform:** Android (API Level 26+ / Android 8.0 Oreo up to Android 14 / API 34)
+- **Language:** Kotlin 2.0+
+- **Architecture:** MVVM (Model-View-ViewModel) with Clean Architecture & unidirectional data
+flow (`StateFlow`, `SharedFlow`, Kotlin Coroutines)
+- **Networking & Streaming:** OkHttp 4.12.0 (WebSocket over TLS)
+- **Audio Capture:** Hardware Acoustic Echo Cancellation via `AudioRecord`
+(`MediaRecorder.AudioSource.VOICE_COMMUNICATION`), 16kHz 16-bit Mono PCM, 40ms
+buffers (1,280 bytes).
+- **Audio Playback:** Low-Latency FastMixer `AudioTrack`
+(`PERFORMANCE_MODE_LOW_LATENCY`, `USAGE_ASSISTANT`), 24kHz 16-bit Mono
+PCM, thread-safe queue.
+- **Visualizer Engine:** 100% Self-Contained Reactive Particle & Pulse Orb (embedded in
+Android WebView or Native Canvas), zero external JS library dependencies required.
+
+
+
+B. Core Scope Constraint (MANDATORY)
+JARVIS is a **pure voice conversation intelligence assistant only**.
+- **DO NOT** add phone automation, accessibility services, app launching, SMS sending,
+phone calling, or system device controls.
+- If asked to perform device actions (e.g., *"Open WhatsApp"*, *"Call Mom"*, *"Turn on
+flashlight"*), JARVIS must politely and conversationally explain that it is purely a voice
+conversational assistant and cannot interact with phone OS hardware.
+
+---
+
+
+
+
+2. Gemini Live WebSocket Wire Protocol
+Specification
+```
+[Android Client: AudioRecord]
+    │ (16kHz 16-bit Mono PCM chunks, 40ms / 1,280 bytes)
+    ▼
+[Base64 Encoding] ──> [realtimeInput.audio JSON]
+    │
+    ▼ (WebSocket
+wss://generativelanguage.googleapis.com/.../BidiGenerateContent?key=API_KEY)
+[Google Gemini Live v1beta API]
+    │
+    ▼ (WebSocket serverContent JSON response)
+[Base64 Audio Chunk] ──> [AudioPlayer: AudioTrack (24kHz Mono Low-Latency)] ──>
+[Speaker]
+```
+A. Endpoint & Connection URL
+- **Protocol:** Bidirectional WebSocket over TLS (WSS)
+- **URL Format:**
+
+`wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.Generative
+Service.BidiGenerateContent?key={API_KEY}`
+- **Version:** Must use `v1beta` (do NOT use `v1alpha` or `v1`).
+- **Query Parameter:** Append `?key={API_KEY}`.
+
+
+
+B. Supported Model Identifier
+Use native audio bidirectional preview models:
+- **Default:** `models/gemini-2.5-flash-native-audio-preview-12-2025`
+
+ ⚠️
+- **Fallback:** `models/gemini-2.5-flash-native-audio-preview-09-2025`
+>     **CRITICAL WARNING:** Do NOT use `gemini-1.5-pro`, `gemini-2.0-flash-exp`, or
+`gemini-2.0-flash-live-001`. These models reject `bidiGenerateContent` WebSocket handshakes
+with Close Code `1008: Model not found or not supported`.
+
+
+
+C. Handshake Setup Frame (Sent immediately upon
+WebSocket open)
+```json
+{
+  "setup": {
+    "model": "models/gemini-2.5-flash-native-audio-preview-12-2025",
+    "generationConfig": {
+      "responseModalities": ["AUDIO"],
+      "speechConfig": {
+        "voiceConfig": {
+          "prebuiltVoiceConfig": {
+            "voiceName": "Aoede"
+          }
+        }
+      }
+    },
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "<SYSTEM_PROMPT>"
+        }
+      ]
+  }
+  }
+}
+```
+Available prebuilt voices: `Aoede`, `Charon`, `Kore`, `Fenrir`, `Puck`, `Leda`, `Orus`, `Zephyr`.
+
+
+
+D. Realtime Audio Input Frame (STRICT PROTOCOL RULE)
+> 🚨     **FATAL PITFALL TO AVOID:** Google Gemini Live deprecated `media_chunks`. If a client
+sends `realtimeInput.mediaChunks`, Gemini **instantly terminates the connection** with error:
+> `1007: realtime_input.media_chunks is deprecated. Use audio, video, or text instead`.
+>
+> **The client MUST send audio using the single `audio` object:**
+```json
+{
+  "realtimeInput": {
+    "audio": {
+      "mimeType": "audio/pcm;rate=16000",
+      "data": "<BASE64_ENCODED_16BIT_16000HZ_MONO_PCM>"
+    }
+  }
+}
+```
+
+
+
+E. Server Response Parsing
+The incoming server payload is JSON:
+1. **Audio Chunk:** Located at `serverContent.modelTurn.parts[].inlineData.data` (Base64
+string).
+  - Format: **24,000 Hz, 16-bit Linear PCM, Mono**.
+  - Decode Base64 to `ByteArray` and immediately feed to
+`AudioPlayer.enqueueAudio(pcmBytes)`.
+2. **Text Transcript Chunk:** Located at `serverContent.modelTurn.parts[].text`.
+  - Accumulate into conversation history turn.
+3. **Barge-in Interruption:** When `serverContent.interrupted == true`:
+  - Instantly call `audioPlayer.flush()` to clear buffered audio from playing.
+  - Clear turn text accumulator.
+  - Reset conversation state back to `LISTENING`.
+4. **Turn Completion:** When `serverContent.turnComplete == true`:
+  - Finalize the conversation turn and store in `ChatRepository`.
+F. Keepalive & Lifecycle Rules
+1. **NO Client JSON Pings:** Never send `{}` or `{"ping": true}`. Gemini closes with code 1007 if
+any unexpected top-level JSON key is sent.
+2. **Transport RFC 6455 Ping:** Configure OkHttp with `.pingInterval(8, TimeUnit.SECONDS)`.
+OkHttp sends native 0x9/0xA WebSocket control frames at the TCP level without breaking
+Gemini's JSON schema.
+3. **9-Minute Session Renewal:** Gemini Live sessions have a ~10-minute maximum lifespan.
+A coroutine in `GeminiLiveWebSocket` must seamlessly renew the connection at 9 minutes (`9 *
+60 * 1000L`).
+4. **Close Code 1008 Abort:** If server closes with code 1008 (Invalid API Key or Model),
+cancel auto-reconnection immediately and notify the user to check their key in Settings.
+
+---
+
+
+
+
+3. Ultra-Low Latency Audio Pipeline Engineering
+| Component | Sample Rate | Channels | Format | Buffer Size | Low Latency Flag |
+|---|---|---|---|---|---|
+| **AudioRecord (Mic)** | 16,000 Hz | Mono (`CHANNEL_IN_MONO`) | 16-bit PCM | 40ms /
+1,280 bytes | `AudioSource.VOICE_COMMUNICATION` (Hardware AEC) |
+| **AudioTrack (Speaker)** | 24,000 Hz | Mono (`CHANNEL_OUT_MONO`) | 16-bit PCM | 4,096
+bytes min | `PERFORMANCE_MODE_LOW_LATENCY`, `USAGE_ASSISTANT` |
+
+
+
+Why VOICE_COMMUNICATION is Essential
+Without `AudioSource.VOICE_COMMUNICATION`, the phone's hardware acoustic echo
+canceler (AEC) is disabled. In that case, the assistant's own voice coming out of the phone
+speaker is picked up by the microphone and streamed back to Gemini in an infinite feedback
+loop. `VOICE_COMMUNICATION` guarantees clean duplex audio.
+
+---
+
+
+
+
+4. Project Directory Structure
+```
+├── build.gradle.kts
+├── settings.gradle.kts
+└── app/
+  ├── build.gradle.kts
+  └── src/main/
+    ├── AndroidManifest.xml
+    ├── assets/
+    │ └── orb/
+    │    └── index.html
+    ├── res/
+    │ ├── drawable/
+    │ │ ├── bg_card_rounded.xml
+    │ │ ├── bg_control_button.xml
+    │ │ ├── bg_input_field.xml
+    │ │ ├── bg_jarvis_bubble.xml
+    │ │ ├── bg_power_button.xml
+    │ │ ├── bg_power_button_off.xml
+    │ │ ├── bg_user_bubble.xml
+    │ │ ├── ic_back.xml
+    │ │ ├── ic_check.xml
+    │ │ ├── ic_history.xml
+    │ │ ├── ic_mic.xml
+    │ │ ├── ic_mic_off.xml
+    │ │ ├── ic_power.xml
+    │ │ ├── ic_settings.xml
+    │ │ └── pill_jarvis_title.xml
+    │ ├── layout/
+    │ │ ├── activity_main.xml
+    │ │ ├── activity_settings.xml
+    │ │ ├── item_chat_turn.xml
+    │ │ └── sheet_chat_history.xml
+    │ ├── values/
+    │ │ ├── colors.xml
+    │ │ ├── strings.xml
+    │ │ └── themes.xml
+    │ └── xml/
+    │    └── network_security_config.xml
+    └── java/com/jarvis/assistant/
+      ├── JarvisApp.kt
+      ├── audio/
+      │ ├── AudioPlayer.kt
+      │ ├── AudioRecorder.kt
+      │ └── AudioUtils.kt
+      ├── data/
+      │ ├── model/
+      │ │ ├── ChatTurn.kt
+       │ │ ├── ConversationState.kt
+       │ │ └── GeminiLiveModels.kt
+       │ ├── preferences/
+       │ │ └── AppPreferences.kt
+       │ └── repository/
+       │   └── ChatRepository.kt
+       ├── network/
+       │ └── GeminiLiveWebSocket.kt
+       ├── ui/
+       │ ├── chat/
+       │ │ ├── ChatAdapter.kt
+       │ │ └── ChatHistoryBottomSheet.kt
+       │ ├── home/
+       │ │ ├── MainActivity.kt
+       │ │ └── MainViewModel.kt
+       │ ├── orb/
+       │ │ └── OrbHelper.kt
+       │ └── settings/
+       │   └── SettingsActivity.kt
+       └── util/
+         └── PromptGenerator.kt
+```
+
+---
+
+
+
+
+5. Build Configuration & Manifest Files
+
+
+settings.gradle.kts
+```kotlin
+pluginManagement {
+   repositories {
+      google {
+          content {
+            includeGroupByRegex("com\\.android.*")
+            includeGroupByRegex("com\\.google.*")
+            includeGroupByRegex("androidx.*")
+          }
+      }
+      mavenCentral()
+     gradlePluginPortal()
+  }
+}
+dependencyResolutionManagement {
+  repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+  repositories {
+    google()
+    mavenCentral()
+  }
+}
+
+rootProject.name = "JarvisAssistant"
+include(":app")
+```
+
+
+
+build.gradle.kts (Project Root)
+```kotlin
+plugins {
+    id("com.android.application") version "8.7.2" apply false
+    id("org.jetbrains.kotlin.android") version "2.0.20" apply false
+}
+```
+
+
+
+app/build.gradle.kts
+```kotlin
+plugins {
+   id("com.android.application")
+   id("org.jetbrains.kotlin.android")
+}
+
+android {
+  namespace = "com.jarvis.assistant"
+  compileSdk = 34
+
+  defaultConfig {
+    applicationId = "com.jarvis.assistant"
+    minSdk = 26
+    targetSdk = 34
+    versionCode = 115
+    versionName = "1.1.5"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    buildTypes {
+      release {
+         isMinifyEnabled = false
+         proguardFiles(
+           getDefaultProguardFile("proguard-android-optimize.txt"),
+           "proguard-rules.pro"
+         )
+      }
+    }
+
+    compileOptions {
+      sourceCompatibility = JavaVersion.VERSION_17
+      targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+      jvmTarget = "17"
+    }
+
+    buildFeatures {
+      viewBinding = true
+    }
+}
+
+dependencies {
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("com.google.android.material:material:1.12.0")
+    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.6")
+    implementation("androidx.lifecycle:lifecycle-livedata-ktx:2.8.6")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
+    implementation("androidx.activity:activity-ktx:1.9.3")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.google.code.gson:gson:2.10.1")
+    implementation("androidx.webkit:webkit:1.12.0")
+}
+```
+app/src/main/AndroidManifest.xml
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+  <uses-permission android:name="android.permission.RECORD_AUDIO" />
+  <uses-permission android:name="android.permission.INTERNET" />
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+  <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+  <application
+    android:name=".JarvisApp"
+    android:allowBackup="true"
+    android:icon="@android:drawable/ic_dialog_info"
+    android:label="@string/app_name"
+    android:roundIcon="@android:drawable/ic_dialog_info"
+    android:supportsRtl="true"
+    android:theme="@style/Theme.JarvisAssistant"
+    android:hardwareAccelerated="true"
+    android:networkSecurityConfig="@xml/network_security_config">
+
+    <activity
+      android:name=".ui.home.MainActivity"
+      android:exported="true"
+      android:screenOrientation="portrait"
+      android:windowSoftInputMode="adjustResize">
+      <intent-filter>
+         <action android:name="android.intent.action.MAIN" />
+         <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+    </activity>
+
+    <activity
+      android:name=".ui.settings.SettingsActivity"
+      android:exported="false"
+      android:screenOrientation="portrait"
+      android:windowSoftInputMode="adjustResize" />
+
+  </application>
+
+</manifest>
+```
+app/src/main/res/xml/network_security_config.xml
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+      <trust-anchors>
+         <certificates src="system" />
+      </trust-anchors>
+    </base-config>
+</network-security-config>
+```
+
+---
+
+
+
+
+6. Resources: Values & Themes
+
+
+app/src/main/res/values/colors.xml
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+   <color name="bg_space">#050507</color>
+   <color name="bg_card">#0E111A</color>
+   <color name="bg_surface">#141926</color>
+   <color name="bg_input">#1A2030</color>
+
+      <color name="primary_cyan">#00F2FE</color>
+      <color name="neon_blue">#00D2FF</color>
+      <color name="soft_blue">#4A90E2</color>
+      <color name="purple_glow">#9B51E0</color>
+      <color name="electric_teal">#4FACFE</color>
+
+      <color name="status_green">#00E676</color>
+      <color name="status_red">#FF1744</color>
+      <color name="status_amber">#FFD600</color>
+
+      <color name="text_primary">#F4F4F6</color>
+      <color name="text_secondary">#9BA3B8</color>
+      <color name="text_muted">#565F76</color>
+  <color name="border_subtle">#20273D</color>
+  <color name="border_active">#00F2FE</color>
+
+    <color name="btn_active">#00F2FE</color>
+    <color name="btn_inactive">#1A2030</color>
+</resources>
+```
+
+
+
+app/src/main/res/values/strings.xml
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+   <string name="app_name">JARVIS</string>
+   <string name="jarvis_title">JARVIS</string>
+
+  <string name="state_idle">IDLE</string>
+  <string name="state_listening">LISTENING</string>
+  <string name="state_thinking">THINKING</string>
+  <string name="state_speaking">SPEAKING</string>
+
+  <string name="btn_on">ON</string>
+  <string name="btn_off">OFF</string>
+  <string name="status_ready">READY</string>
+  <string name="status_live">LIVE</string>
+  <string name="status_connecting">CONNECTING...</string>
+  <string name="status_disconnected">OFFLINE</string>
+
+  <string name="settings_title">SETTINGS</string>
+  <string name="api_key_label">Gemini API Key</string>
+  <string name="api_key_hint">Paste your Gemini API key</string>
+  <string name="model_label">AI Model</string>
+  <string name="voice_label">Voice</string>
+  <string name="personality_label">Personality</string>
+  <string name="username_label">User Name</string>
+  <string name="username_hint">e.g. Tony Stark, Sir, Boss (optional)</string>
+  <string name="save_settings">Save Settings</string>
+  <string name="settings_saved">Settings saved successfully</string>
+
+   <string name="chat_history_title">Conversation History</string>
+   <string name="no_history">No conversation turns yet.</string>
+   <string name="clear_history">Clear History</string>
+</resources>
+```
+
+
+
+app/src/main/res/values/themes.xml
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.JarvisAssistant" parent="Theme.Material3.Dark.NoActionBar">
+      <item name="android:statusBarColor">@color/bg_space</item>
+      <item name="android:navigationBarColor">@color/bg_space</item>
+      <item name="android:windowBackground">@color/bg_space</item>
+      <item name="colorPrimary">@color/primary_cyan</item>
+      <item name="colorOnPrimary">@color/bg_space</item>
+      <item name="colorSurface">@color/bg_card</item>
+      <item name="colorOnSurface">@color/text_primary</item>
+    </style>
+</resources>
+```
+
+---
+
+
+
+
+7. Resources: Drawables (Shapes & Vector
+Icons)
+
+
+app/src/main/res/drawable/bg_power_button.xml
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+   android:color="#4000F2FE">
+   <item>
+      <shape android:shape="oval">
+        <solid android:color="#121828" />
+        <stroke
+           android:width="2.5dp"
+           android:color="#00F2FE" />
+        <size android:width="84dp" android:height="84dp" />
+      </shape>
+   </item>
+</ripple>
+```
+
+
+
+app/src/main/res/drawable/bg_power_button_off.xml
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="#40FF1744">
+    <item>
+       <shape android:shape="oval">
+         <solid android:color="#121520" />
+         <stroke
+            android:width="2dp"
+            android:color="#3A445C" />
+         <size android:width="84dp" android:height="84dp" />
+       </shape>
+    </item>
+</ripple>
+```
+
+
+
+app/src/main/res/drawable/bg_control_button.xml
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="#4000F2FE">
+    <item>
+       <shape android:shape="oval">
+         <solid android:color="#101524" />
+         <stroke
+            android:width="1.5dp"
+            android:color="#222C44" />
+         <size android:width="56dp" android:height="56dp" />
+       </shape>
+    </item>
+</ripple>
+```
+app/src/main/res/drawable/bg_card_rounded.xml
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <corners android:radius="16dp" />
+    <solid android:color="#0E121E" />
+    <stroke
+      android:width="1dp"
+      android:color="#1D263B" />
+</shape>
+```
+
+
+
+app/src/main/res/drawable/bg_input_field.xml
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <corners android:radius="12dp" />
+    <solid android:color="#141A29" />
+    <stroke
+      android:width="1dp"
+      android:color="#283450" />
+</shape>
+```
+
+
+
+app/src/main/res/drawable/bg_user_bubble.xml
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+   android:shape="rectangle">
+   <corners
+     android:topLeftRadius="16dp"
+     android:topRightRadius="16dp"
+     android:bottomLeftRadius="16dp"
+     android:bottomRightRadius="4dp" />
+   <solid android:color="#1B2742" />
+   <stroke
+     android:width="1dp"
+     android:color="#2C4270" />
+</shape>
+```
+
+
+
+app/src/main/res/drawable/bg_jarvis_bubble.xml
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <corners
+      android:topLeftRadius="16dp"
+      android:topRightRadius="16dp"
+      android:bottomLeftRadius="4dp"
+      android:bottomRightRadius="16dp" />
+    <solid android:color="#0F1E33" />
+    <stroke
+      android:width="1dp"
+      android:color="#00F2FE" />
+</shape>
+```
+
+
+
+app/src/main/res/drawable/pill_jarvis_title.xml
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <corners android:radius="24dp" />
+    <solid android:color="#111624" />
+    <stroke
+      android:width="1.5dp"
+      android:color="#00F2FE" />
+    <padding
+      android:left="20dp"
+      android:top="8dp"
+      android:right="20dp"
+      android:bottom="8dp" />
+</shape>
+```
+app/src/main/res/drawable/ic_back.xml
+```xml
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+  <path
+     android:fillColor="#F4F4F6"
+     android:pathData="M20,11H7.83l5.59,-5.59L12,4l-8,8 8,8 1.41,-1.41L7.83,13H20v-2z"/>
+</vector>
+```
+
+
+
+app/src/main/res/drawable/ic_check.xml
+```xml
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+  <path
+     android:fillColor="#050507"
+     android:pathData="M9,16.17L4.83,12l-1.42,1.41L9,19 21,7l-1.41,-1.41z"/>
+</vector>
+```
+
+
+
+app/src/main/res/drawable/ic_history.xml
+```xml
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+   android:width="24dp"
+   android:height="24dp"
+   android:viewportWidth="24"
+   android:viewportHeight="24">
+  <path
+    android:fillColor="#00F2FE"
+    android:pathData="M13,3a9,9 0 0,0 -9,9H1l3.89,3.89 0.07,0.14L9,12H6c0,-3.87 3.13,-7
+7,-7s7,3.13 7,7 -3.13,7 -7,7c-1.93,0 -3.68,-0.79 -4.94,-2.06l-1.42,1.42C8.27,19.99 10.51,21
+13,21c4.97,0 9,-4.03 9,-9s-4.03,-9 -9,-9zm-1,5v5l4.28,2.54 0.72,-1.21 -3.5,-2.08V8H12z"/>
+</vector>
+```
+
+
+
+app/src/main/res/drawable/ic_mic.xml
+```xml
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="28dp"
+    android:height="28dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+  <path
+     android:fillColor="#00F2FE"
+     android:pathData="M12,14c1.66,0 3,-1.34 3,-3V5c0,-1.66 -1.34,-3 -3,-3S9,3.34
+9,5v6C9,12.66 10.34,14 12,14zM17.3,11c0,3 -2.54,5.1 -5.3,5.1S6.7,14 6.7,11H5c0,3.41
+2.72,6.23 6,6.72V21h2v-3.28c3.28,-0.48 6,-3.3 6,-6.72H17.3z"/>
+</vector>
+```
+
+
+
+app/src/main/res/drawable/ic_mic_off.xml
+```xml
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="28dp"
+    android:height="28dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+  <path
+     android:fillColor="#FF1744"
+     android:pathData="M19,11h-1.7c0,0.74 -0.16,1.43 -0.43,2.05l1.23,1.23c0.56,-0.98 0.9,-2.09
+0.9,-3.28zm-4.02,0.12L10.23,6.37C10.6,5.55 11.24,5 12,5c1.66,0 3,1.34
+3,3v3.12zM4.27,3L3,4.27l6.01,6.01V11c0,1.66 1.33,3 2.99,3 0.22,0 0.44,-0.03
+0.65,-0.08l1.66,1.66c-0.71,0.33 -1.5,0.52 -2.31,0.52 -2.76,0 -5.3,-2.1 -5.3,-5.1H5c0,3.41
+2.72,6.23 6,6.72V21h2v-3.28c0.91,-0.13 1.77,-0.45 2.54,-0.9L19.73,21 21,19.73 4.27,3z"/>
+</vector>
+```
+
+
+
+app/src/main/res/drawable/ic_power.xml
+```xml
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+   android:width="36dp"
+    android:height="36dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+  <path
+     android:fillColor="#00F2FE"
+     android:pathData="M13,3h-2v10h2V3zM17.83,5.17l-1.42,1.42C17.99,7.86 19,9.81
+19,12c0,3.87 -3.13,7 -7,7s-7,-3.13 -7,-7c0,-2.19 1.01,-4.14 2.58,-5.42L6.17,5.17C4.23,6.82
+3,9.26 3,12c0,4.97 4.03,9 9,9s9,-4.03 9,-9C21,9.26 19.77,6.82 17.83,5.17z"/>
+</vector>
+```
+
+
+
+app/src/main/res/drawable/ic_settings.xml
+```xml
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="28dp"
+    android:height="28dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+  <path
+     android:fillColor="#00F2FE"
+     android:pathData="M19.14,12.94c0.04,-0.3 0.06,-0.61 0.06,-0.94c0,-0.32 -0.02,-0.64
+-0.07,-0.94l2.03,-1.58c0.18,-0.14 0.23,-0.41 0.12,-0.61l-1.92,-3.32c-0.12,-0.22 -0.37,-0.29
+-0.59,-0.22l-2.39,0.96c-0.5,-0.38 -1.03,-0.7 -1.62,-0.94L14.4,2.81c-0.04,-0.24 -0.24,-0.41
+-0.48,-0.41h-3.84c-0.24,0 -0.43,0.17 -0.47,0.41L9.25,5.35C8.66,5.59 8.12,5.92
+7.63,6.29L5.24,5.33c-0.22,-0.08 -0.47,0 -0.59,0.22L2.74,8.87C2.62,9.08 2.66,9.34
+2.86,9.48l2.03,1.58C4.84,11.36 4.8,11.69 4.8,12s0.02,0.64 0.07,0.94l-2.03,1.58c-0.18,0.14
+-0.23,0.41 -0.12,0.61l1.92,3.32c0.12,0.22 0.37,0.29 0.59,0.22l2.39,-0.96c0.5,0.38 1.03,0.7
+1.62,0.94l0.36,2.54c0.05,0.24 0.24,0.41 0.48,0.41h3.84c0.24,0 0.44,-0.17
+0.47,-0.41l0.36,-2.54c0.59,-0.24 1.13,-0.56 1.62,-0.94l2.39,0.96c0.22,0.08 0.47,0
+0.59,-0.22l1.92,-3.32c0.12,-0.22 0.07,-0.47 -0.12,-0.61L19.14,12.94zM12,15.6c-1.98,0
+-3.6,-1.62 -3.6,-3.6s1.62,-3.6 3.6,-3.6s3.6,1.62 3.6,3.6S13.98,15.6 12,15.6z"/>
+</vector>
+```
+
+---
+
+
+
+
+8. Layout XML Files
+app/src/main/res/layout/activity_main.xml
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout
+   xmlns:android="http://schemas.android.com/apk/res/android"
+   xmlns:app="http://schemas.android.com/apk/res-auto"
+   xmlns:tools="http://schemas.android.com/tools"
+   android:id="@+id/rootLayout"
+   android:layout_width="match_parent"
+   android:layout_height="match_parent"
+   android:background="@color/bg_space">
+
+  <!-- TOP BAR -->
+  <androidx.constraintlayout.widget.ConstraintLayout
+     android:id="@+id/topBar"
+     android:layout_width="match_parent"
+     android:layout_height="wrap_content"
+     android:paddingStart="20dp"
+     android:paddingEnd="20dp"
+     android:paddingTop="16dp"
+     android:paddingBottom="12dp"
+     app:layout_constraintTop_toTopOf="parent"
+     app:layout_constraintStart_toStartOf="parent"
+     app:layout_constraintEnd_toEndOf="parent">
+
+    <TextView
+      android:id="@+id/tvLiveTime"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:textColor="@color/text_secondary"
+      android:textSize="15sp"
+      android:fontFamily="sans-serif-medium"
+      android:letterSpacing="0.05"
+      tools:text="19:45"
+      app:layout_constraintStart_toStartOf="parent"
+      app:layout_constraintTop_toTopOf="parent"
+      app:layout_constraintBottom_toBottomOf="parent" />
+
+    <LinearLayout
+      android:id="@+id/boxJarvisTitle"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:background="@drawable/pill_jarvis_title"
+     android:gravity="center"
+     android:clickable="true"
+     android:focusable="true"
+     app:layout_constraintStart_toStartOf="parent"
+     app:layout_constraintEnd_toEndOf="parent"
+     app:layout_constraintTop_toTopOf="parent"
+     app:layout_constraintBottom_toBottomOf="parent">
+
+    <TextView
+       android:id="@+id/tvJarvisTitle"
+       android:layout_width="wrap_content"
+       android:layout_height="wrap_content"
+       android:text="@string/jarvis_title"
+       android:textColor="@color/primary_cyan"
+       android:textSize="16sp"
+       android:textStyle="bold"
+       android:fontFamily="sans-serif-black"
+       android:letterSpacing="0.2" />
+  </LinearLayout>
+
+  <ImageButton
+    android:id="@+id/btnSettings"
+    android:layout_width="42dp"
+    android:layout_height="42dp"
+    android:background="?attr/selectableItemBackgroundBorderless"
+    android:src="@drawable/ic_settings"
+    android:contentDescription="@string/settings_title"
+    app:tint="@color/primary_cyan"
+    app:layout_constraintEnd_toEndOf="parent"
+    app:layout_constraintTop_toTopOf="parent"
+    app:layout_constraintBottom_toBottomOf="parent" />
+
+</androidx.constraintlayout.widget.ConstraintLayout>
+
+<!-- Sub-bar for Chat History access & Current Personality indicator -->
+<LinearLayout
+   android:id="@+id/subInfoBar"
+   android:layout_width="wrap_content"
+   android:layout_height="wrap_content"
+   android:orientation="horizontal"
+   android:gravity="center_vertical"
+   android:layout_marginTop="4dp"
+   app:layout_constraintTop_toBottomOf="@+id/topBar"
+   app:layout_constraintStart_toStartOf="parent"
+  app:layout_constraintEnd_toEndOf="parent">
+
+  <TextView
+    android:id="@+id/tvPersonalityMode"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:text="Assistant Mode"
+    android:textColor="@color/text_muted"
+    android:textSize="11sp"
+    android:letterSpacing="0.08"
+    android:fontFamily="sans-serif-medium" />
+
+  <TextView
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:text=" • "
+    android:textColor="@color/text_muted"
+    android:textSize="11sp" />
+
+  <TextView
+     android:id="@+id/tvViewHistory"
+     android:layout_width="wrap_content"
+     android:layout_height="wrap_content"
+     android:text="History"
+     android:textColor="@color/neon_blue"
+     android:textSize="11sp"
+     android:fontFamily="sans-serif-medium"
+     android:background="?attr/selectableItemBackground"
+     android:clickable="true"
+     android:focusable="true" />
+</LinearLayout>
+
+<!-- CENTER VISUALIZER CONTAINER (WebView Orb) -->
+<FrameLayout
+   android:id="@+id/orbContainer"
+   android:layout_width="0dp"
+   android:layout_height="0dp"
+   android:layout_marginHorizontal="24dp"
+   app:layout_constraintDimensionRatio="1:1"
+   app:layout_constraintTop_toBottomOf="@+id/subInfoBar"
+   app:layout_constraintBottom_toTopOf="@+id/tvConversationState"
+   app:layout_constraintStart_toStartOf="parent"
+   app:layout_constraintEnd_toEndOf="parent">
+  <WebView
+     android:id="@+id/webViewOrb"
+     android:layout_width="match_parent"
+     android:layout_height="match_parent"
+     android:background="@android:color/transparent" />
+</FrameLayout>
+
+<!-- CONVERSATION STATE TEXT (IDLE, LISTENING, THINKING, SPEAKING) -->
+<TextView
+   android:id="@+id/tvConversationState"
+   android:layout_width="wrap_content"
+   android:layout_height="wrap_content"
+   android:text="@string/state_idle"
+   android:textColor="@color/text_primary"
+   android:textSize="22sp"
+   android:textStyle="bold"
+   android:fontFamily="sans-serif-black"
+   android:letterSpacing="0.25"
+   android:layout_marginBottom="28dp"
+   app:layout_constraintBottom_toTopOf="@+id/controlsLayout"
+   app:layout_constraintStart_toStartOf="parent"
+   app:layout_constraintEnd_toEndOf="parent" />
+
+<!-- BOTTOM CONTROLS BAR -->
+<androidx.constraintlayout.widget.ConstraintLayout
+   android:id="@+id/controlsLayout"
+   android:layout_width="match_parent"
+   android:layout_height="wrap_content"
+   android:paddingHorizontal="32dp"
+   android:paddingBottom="40dp"
+   app:layout_constraintBottom_toBottomOf="parent"
+   app:layout_constraintStart_toStartOf="parent"
+   app:layout_constraintEnd_toEndOf="parent">
+
+  <!-- Left: Mic Mute Toggle -->
+  <ImageButton
+     android:id="@+id/btnMicMute"
+     android:layout_width="56dp"
+     android:layout_height="56dp"
+     android:background="@drawable/bg_control_button"
+     android:src="@drawable/ic_mic"
+     android:contentDescription="Mute or Unmute Mic"
+     app:tint="@color/primary_cyan"
+     app:layout_constraintStart_toStartOf="parent"
+  app:layout_constraintTop_toTopOf="parent"
+  app:layout_constraintBottom_toBottomOf="parent" />
+
+<!-- Center: ON/OFF Power Button -->
+<LinearLayout
+   android:id="@+id/btnPowerSession"
+   android:layout_width="84dp"
+   android:layout_height="84dp"
+   android:background="@drawable/bg_power_button_off"
+   android:gravity="center"
+   android:orientation="vertical"
+   android:clickable="true"
+   android:focusable="true"
+   app:layout_constraintStart_toStartOf="parent"
+   app:layout_constraintEnd_toEndOf="parent"
+   app:layout_constraintTop_toTopOf="parent"
+   app:layout_constraintBottom_toBottomOf="parent">
+
+  <ImageView
+    android:id="@+id/ivPowerIcon"
+    android:layout_width="32dp"
+    android:layout_height="32dp"
+    android:src="@drawable/ic_power"
+    app:tint="@color/text_muted" />
+
+  <TextView
+     android:id="@+id/tvPowerText"
+     android:layout_width="wrap_content"
+     android:layout_height="wrap_content"
+     android:text="@string/btn_off"
+     android:textColor="@color/text_muted"
+     android:textSize="12sp"
+     android:textStyle="bold"
+     android:letterSpacing="0.1"
+     android:layout_marginTop="2dp" />
+</LinearLayout>
+
+<!-- Right: Status Pill Indicator -->
+<LinearLayout
+   android:id="@+id/boxConnectionStatus"
+   android:layout_width="wrap_content"
+   android:layout_height="wrap_content"
+   android:orientation="horizontal"
+   android:gravity="center_vertical"
+       android:background="@drawable/bg_input_field"
+       android:paddingHorizontal="12dp"
+       android:paddingVertical="8dp"
+       app:layout_constraintEnd_toEndOf="parent"
+       app:layout_constraintTop_toTopOf="parent"
+       app:layout_constraintBottom_toBottomOf="parent">
+
+       <View
+         android:id="@+id/viewStatusDot"
+         android:layout_width="8dp"
+         android:layout_height="8dp"
+         android:background="@drawable/bg_power_button"
+         android:backgroundTint="@color/status_green" />
+
+      <TextView
+         android:id="@+id/tvConnectionStatus"
+         android:layout_width="wrap_content"
+         android:layout_height="wrap_content"
+         android:text="@string/status_ready"
+         android:textColor="@color/text_secondary"
+         android:textSize="11sp"
+         android:textStyle="bold"
+         android:letterSpacing="0.05"
+         android:layout_marginStart="6dp" />
+    </LinearLayout>
+
+  </androidx.constraintlayout.widget.ConstraintLayout>
+
+</androidx.constraintlayout.widget.ConstraintLayout>
+```
+
+
+
+app/src/main/res/layout/activity_settings.xml
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+   xmlns:android="http://schemas.android.com/apk/res/android"
+   xmlns:app="http://schemas.android.com/apk/res-auto"
+   xmlns:tools="http://schemas.android.com/tools"
+   android:layout_width="match_parent"
+   android:layout_height="match_parent"
+   android:background="@color/bg_space"
+   android:orientation="vertical">
+<!-- App Bar -->
+<androidx.constraintlayout.widget.ConstraintLayout
+   android:layout_width="match_parent"
+   android:layout_height="wrap_content"
+   android:paddingStart="16dp"
+   android:paddingEnd="16dp"
+   android:paddingTop="16dp"
+   android:paddingBottom="14dp">
+
+  <ImageButton
+    android:id="@+id/btnBack"
+    android:layout_width="40dp"
+    android:layout_height="40dp"
+    android:background="?attr/selectableItemBackgroundBorderless"
+    android:src="@drawable/ic_back"
+    android:contentDescription="Back"
+    app:tint="@color/text_primary"
+    app:layout_constraintStart_toStartOf="parent"
+    app:layout_constraintTop_toTopOf="parent"
+    app:layout_constraintBottom_toBottomOf="parent" />
+
+  <TextView
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:text="@string/settings_title"
+    android:textColor="@color/text_primary"
+    android:textSize="18sp"
+    android:textStyle="bold"
+    android:fontFamily="sans-serif-black"
+    android:letterSpacing="0.15"
+    app:layout_constraintStart_toStartOf="parent"
+    app:layout_constraintEnd_toEndOf="parent"
+    app:layout_constraintTop_toTopOf="parent"
+    app:layout_constraintBottom_toBottomOf="parent" />
+
+  <Button
+    android:id="@+id/btnSave"
+    style="@style/Widget.Material3.Button.TextButton"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:text="Save"
+    android:textColor="@color/primary_cyan"
+    android:textStyle="bold"
+    app:layout_constraintEnd_toEndOf="parent"
+    app:layout_constraintTop_toTopOf="parent"
+    app:layout_constraintBottom_toBottomOf="parent" />
+</androidx.constraintlayout.widget.ConstraintLayout>
+
+<ScrollView
+  android:layout_width="match_parent"
+  android:layout_height="0dp"
+  android:layout_weight="1"
+  android:fillViewport="true">
+
+  <LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingHorizontal="20dp"
+    android:paddingVertical="12dp">
+
+    <!-- 1. API KEY -->
+    <TextView
+       android:layout_width="wrap_content"
+       android:layout_height="wrap_content"
+       android:text="@string/api_key_label"
+       android:textColor="@color/primary_cyan"
+       android:textSize="13sp"
+       android:textStyle="bold"
+       android:letterSpacing="0.05" />
+
+    <com.google.android.material.textfield.TextInputLayout
+      android:id="@+id/tilApiKey"
+      style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="8dp"
+      app:boxBackgroundColor="@color/bg_input"
+      app:boxStrokeColor="@color/primary_cyan"
+      app:boxCornerRadiusTopStart="12dp"
+      app:boxCornerRadiusTopEnd="12dp"
+      app:boxCornerRadiusBottomStart="12dp"
+      app:boxCornerRadiusBottomEnd="12dp"
+      app:endIconMode="password_toggle"
+      app:endIconTint="@color/text_secondary"
+      app:hintEnabled="false">
+  <com.google.android.material.textfield.TextInputEditText
+    android:id="@+id/etApiKey"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:hint="@string/api_key_hint"
+    android:textColor="@color/text_primary"
+    android:textColorHint="@color/text_muted"
+    android:inputType="textPassword"
+    android:singleLine="true"
+    android:paddingVertical="14dp" />
+</com.google.android.material.textfield.TextInputLayout>
+
+<TextView
+  android:id="@+id/btnPasteApiKey"
+  android:layout_width="wrap_content"
+  android:layout_height="wrap_content"
+  android:text="Paste from clipboard"
+  android:textColor="@color/neon_blue"
+  android:textSize="12sp"
+  android:layout_marginTop="6dp"
+  android:background="?attr/selectableItemBackground"
+  android:padding="4dp" />
+
+<!-- 2. AI MODEL -->
+<TextView
+   android:layout_width="wrap_content"
+   android:layout_height="wrap_content"
+   android:text="@string/model_label"
+   android:textColor="@color/primary_cyan"
+   android:textSize="13sp"
+   android:textStyle="bold"
+   android:letterSpacing="0.05"
+   android:layout_marginTop="24dp" />
+
+<Spinner
+  android:id="@+id/spinnerModel"
+  android:layout_width="match_parent"
+  android:layout_height="52dp"
+  android:layout_marginTop="8dp"
+  android:background="@drawable/bg_input_field"
+  android:popupBackground="@color/bg_card"
+  android:paddingHorizontal="12dp" />
+
+<!-- 3. VOICE -->
+<TextView
+  android:layout_width="wrap_content"
+  android:layout_height="wrap_content"
+  android:text="@string/voice_label"
+  android:textColor="@color/primary_cyan"
+  android:textSize="13sp"
+  android:textStyle="bold"
+  android:letterSpacing="0.05"
+  android:layout_marginTop="24dp" />
+
+<Spinner
+  android:id="@+id/spinnerVoice"
+  android:layout_width="match_parent"
+  android:layout_height="52dp"
+  android:layout_marginTop="8dp"
+  android:background="@drawable/bg_input_field"
+  android:popupBackground="@color/bg_card"
+  android:paddingHorizontal="12dp" />
+
+<!-- 4. PERSONALITY -->
+<TextView
+   android:layout_width="wrap_content"
+   android:layout_height="wrap_content"
+   android:text="@string/personality_label"
+   android:textColor="@color/primary_cyan"
+   android:textSize="13sp"
+   android:textStyle="bold"
+   android:letterSpacing="0.05"
+   android:layout_marginTop="24dp" />
+
+<Spinner
+  android:id="@+id/spinnerPersonality"
+  android:layout_width="match_parent"
+  android:layout_height="52dp"
+  android:layout_marginTop="8dp"
+  android:background="@drawable/bg_input_field"
+  android:popupBackground="@color/bg_card"
+  android:paddingHorizontal="12dp" />
+
+<TextView
+  android:id="@+id/tvPersonalityDesc"
+  android:layout_width="match_parent"
+  android:layout_height="wrap_content"
+  android:layout_marginTop="8dp"
+  android:textColor="@color/text_secondary"
+  android:textSize="12sp"
+  tools:text="Friendly, helpful, Hinglish or English" />
+
+<!-- 5. USER NAME -->
+<TextView
+   android:layout_width="wrap_content"
+   android:layout_height="wrap_content"
+   android:text="@string/username_label"
+   android:textColor="@color/primary_cyan"
+   android:textSize="13sp"
+   android:textStyle="bold"
+   android:letterSpacing="0.05"
+   android:layout_marginTop="24dp" />
+
+<com.google.android.material.textfield.TextInputLayout
+  android:id="@+id/tilUserName"
+  style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+  android:layout_width="match_parent"
+  android:layout_height="wrap_content"
+  android:layout_marginTop="8dp"
+  app:boxBackgroundColor="@color/bg_input"
+  app:boxStrokeColor="@color/primary_cyan"
+  app:boxCornerRadiusTopStart="12dp"
+  app:boxCornerRadiusTopEnd="12dp"
+  app:boxCornerRadiusBottomStart="12dp"
+  app:boxCornerRadiusBottomEnd="12dp"
+  app:hintEnabled="false">
+
+  <com.google.android.material.textfield.TextInputEditText
+    android:id="@+id/etUserName"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:hint="@string/username_hint"
+    android:textColor="@color/text_primary"
+    android:textColorHint="@color/text_muted"
+    android:inputType="textPersonName"
+    android:singleLine="true"
+    android:paddingVertical="14dp" />
+</com.google.android.material.textfield.TextInputLayout>
+
+<View
+  android:layout_width="match_parent"
+  android:layout_height="40dp" />
+      </LinearLayout>
+    </ScrollView>
+</LinearLayout>
+```
+
+
+
+app/src/main/res/layout/sheet_chat_history.xml
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+   xmlns:android="http://schemas.android.com/apk/res/android"
+   xmlns:app="http://schemas.android.com/apk/res-auto"
+   xmlns:tools="http://schemas.android.com/tools"
+   android:layout_width="match_parent"
+   android:layout_height="match_parent"
+   android:background="@color/bg_card"
+   android:orientation="vertical"
+   android:paddingTop="12dp">
+
+  <View
+    android:layout_width="40dp"
+    android:layout_height="4dp"
+    android:background="@color/border_subtle"
+    android:layout_gravity="center_horizontal"
+    android:layout_marginBottom="12dp" />
+
+  <androidx.constraintlayout.widget.ConstraintLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:paddingHorizontal="20dp"
+    android:paddingBottom="12dp">
+
+    <TextView
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:text="@string/chat_history_title"
+      android:textColor="@color/text_primary"
+      android:textSize="17sp"
+      android:textStyle="bold"
+      android:letterSpacing="0.05"
+      app:layout_constraintStart_toStartOf="parent"
+      app:layout_constraintTop_toTopOf="parent"
+      app:layout_constraintBottom_toBottomOf="parent" />
+
+    <Button
+      android:id="@+id/btnClearHistory"
+      style="@style/Widget.Material3.Button.TextButton"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:text="@string/clear_history"
+      android:textColor="@color/status_red"
+      android:textSize="12sp"
+      app:layout_constraintEnd_toEndOf="parent"
+      app:layout_constraintTop_toTopOf="parent"
+      app:layout_constraintBottom_toBottomOf="parent" />
+  </androidx.constraintlayout.widget.ConstraintLayout>
+
+  <View
+    android:layout_width="match_parent"
+    android:layout_height="1dp"
+    android:background="@color/border_subtle" />
+
+  <TextView
+    android:id="@+id/tvEmptyHistory"
+    android:layout_width="match_parent"
+    android:layout_height="240dp"
+    android:gravity="center"
+    android:text="@string/no_history"
+    android:textColor="@color/text_muted"
+    android:textSize="14sp"
+    android:visibility="gone" />
+
+  <androidx.recyclerview.widget.RecyclerView
+    android:id="@+id/rvChatHistory"
+    android:layout_width="match_parent"
+    android:layout_height="0dp"
+    android:layout_weight="1"
+    android:paddingHorizontal="16dp"
+    android:paddingTop="12dp"
+    android:clipToPadding="false"
+    tools:listitem="@layout/item_chat_turn" />
+
+</LinearLayout>
+```
+app/src/main/res/layout/item_chat_turn.xml
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+   xmlns:android="http://schemas.android.com/apk/res/android"
+   xmlns:tools="http://schemas.android.com/tools"
+   android:layout_width="match_parent"
+   android:layout_height="wrap_content"
+   android:orientation="vertical"
+   android:layout_marginBottom="18dp">
+
+  <TextView
+    android:id="@+id/tvTimestamp"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:layout_gravity="center_horizontal"
+    android:textColor="@color/text_muted"
+    android:textSize="11sp"
+    android:layout_marginBottom="6dp"
+    tools:text="19:45:10" />
+
+  <LinearLayout
+    android:id="@+id/boxUserMessage"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:layout_gravity="end"
+    android:layout_marginStart="48dp"
+    android:background="@drawable/bg_user_bubble"
+    android:orientation="vertical"
+    android:paddingHorizontal="14dp"
+    android:paddingVertical="10dp">
+
+    <TextView
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:text="YOU"
+      android:textColor="@color/text_secondary"
+      android:textSize="10sp"
+      android:textStyle="bold"
+      android:letterSpacing="0.05" />
+
+    <TextView
+      android:id="@+id/tvUserTranscript"
+           android:layout_width="wrap_content"
+           android:layout_height="wrap_content"
+           android:textColor="@color/text_primary"
+           android:textSize="14sp"
+           android:layout_marginTop="2dp"
+           tools:text="Hello JARVIS, how are you?" />
+      </LinearLayout>
+
+      <LinearLayout
+        android:id="@+id/boxJarvisMessage"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="start"
+        android:layout_marginEnd="48dp"
+        android:layout_marginTop="8dp"
+        android:background="@drawable/bg_jarvis_bubble"
+        android:orientation="vertical"
+        android:paddingHorizontal="14dp"
+        android:paddingVertical="10dp">
+
+        <TextView
+          android:layout_width="wrap_content"
+          android:layout_height="wrap_content"
+          android:text="JARVIS"
+          android:textColor="@color/primary_cyan"
+          android:textSize="10sp"
+          android:textStyle="bold"
+          android:letterSpacing="0.05" />
+
+        <TextView
+           android:id="@+id/tvJarvisResponse"
+           android:layout_width="wrap_content"
+           android:layout_height="wrap_content"
+           android:textColor="@color/text_primary"
+           android:textSize="14sp"
+           android:layout_marginTop="2dp"
+           tools:text="Online and ready. How can I assist you today, Boss?" />
+      </LinearLayout>
+
+</LinearLayout>
+```
+
+---
+9. 100% Self-Contained Visualizer:
+app/src/main/assets/orb/index.html
+> **ZERO EXTERNAL SCRIPTS NEEDED:** This file runs inside Android WebView without
+needing `three.min.js`, `OrbitControls.js`, or network access. It renders an ultra-smooth 60fps
+glowing chromatic energy orb with floating particles, responsive state transitions (`IDLE`,
+`LISTENING`, `THINKING`, `SPEAKING`), and real-time audio amplitude expansion.
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0,
+user-scalable=no">
+  <title>JARVIS Energy Orb</title>
+  <style>
+   * { box-sizing: border-box; }
+   html, body {
+     margin: 0;
+     padding: 0;
+     width: 100%;
+     height: 100%;
+     overflow: hidden;
+     background: transparent;
+     display: flex;
+     align-items: center;
+     justify-content: center;
+     user-select: none;
+     -webkit-user-select: none;
+   }
+   canvas {
+     display: block;
+     width: 100%;
+     height: 100%;
+     background: transparent;
+   }
+  </style>
+</head>
+<body>
+<canvas id="orbCanvas"></canvas>
+<script>
+(function() {
+  const canvas = document.getElementById('orbCanvas');
+  const ctx = canvas.getContext('2d');
+
+ let width = 300;
+ let height = 300;
+ let dpr = window.devicePixelRatio || 1;
+
+ function resize() {
+   const rect = canvas.getBoundingClientRect();
+   width = rect.width || window.innerWidth || 300;
+   height = rect.height || window.innerHeight || 300;
+   canvas.width = width * dpr;
+   canvas.height = height * dpr;
+   ctx.scale(dpr, dpr);
+ }
+ window.addEventListener('resize', resize);
+ setTimeout(resize, 50);
+
+ const PRESETS = {
+  idle: {
+    coreColor: [0, 242, 254],
+    midColor: [0, 119, 182],
+    deepColor: [5, 10, 30],
+    glowAlpha: 0.45,
+    pulseSpeed: 0.02,
+    ringCount: 3,
+    particleSpeed: 0.5
+  },
+  listening: {
+    coreColor: [0, 242, 254],
+    midColor: [0, 210, 255],
+    deepColor: [0, 34, 51],
+    glowAlpha: 0.8,
+    pulseSpeed: 0.06,
+    ringCount: 5,
+    particleSpeed: 1.4
+  },
+  thinking: {
+    coreColor: [224, 170, 255],
+    midColor: [123, 44, 191],
+    deepColor: [36, 0, 70],
+    glowAlpha: 0.85,
+    pulseSpeed: 0.09,
+    ringCount: 4,
+    particleSpeed: 2.2
+  },
+  speaking: {
+    coreColor: [144, 224, 239],
+    midColor: [0, 180, 216],
+    deepColor: [0, 27, 68],
+    glowAlpha: 0.9,
+    pulseSpeed: 0.07,
+    ringCount: 6,
+    particleSpeed: 1.8
+  }
+};
+
+let currentState = 'idle';
+let curProps = { ...PRESETS.idle };
+let targetProps = { ...PRESETS.idle };
+let audioLevel = 0.0;
+let targetAudioLevel = 0.0;
+let time = 0;
+
+// 60 Ambient Particles
+const PARTICLE_COUNT = 60;
+const particles = [];
+for (let i = 0; i < PARTICLE_COUNT; i++) {
+  particles.push({
+    angle: Math.random() * Math.PI * 2,
+    dist: 20 + Math.random() * 85,
+    size: 1 + Math.random() * 2.5,
+    speed: (0.005 + Math.random() * 0.015) * (Math.random() > 0.5 ? 1 : -1),
+    alpha: 0.2 + Math.random() * 0.7
+  });
+}
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+function lerpColor(c1, c2, t) {
+  return [
+    Math.round(lerp(c1[0], c2[0], t)),
+    Math.round(lerp(c1[1], c2[1], t)),
+    Math.round(lerp(c1[2], c2[2], t))
+  ];
+}
+
+window.setOrbState = function(stateName, level) {
+   const s = (stateName || 'idle').toLowerCase();
+   if (PRESETS[s]) {
+     currentState = s;
+     targetProps = PRESETS[s];
+   }
+   if (typeof level === 'number') {
+     targetAudioLevel = Math.max(0, Math.min(1, level));
+   }
+ };
+
+ window.setAudioLevel = function(level) {
+   if (typeof level === 'number') {
+     targetAudioLevel = Math.max(0, Math.min(1, level));
+   }
+ };
+
+ function render() {
+  time += 1;
+  audioLevel = lerp(audioLevel, targetAudioLevel, 0.25);
+  targetAudioLevel = lerp(targetAudioLevel, 0, 0.08);
+
+  curProps.coreColor = lerpColor(curProps.coreColor, targetProps.coreColor, 0.08);
+  curProps.midColor = lerpColor(curProps.midColor, targetProps.midColor, 0.08);
+  curProps.deepColor = lerpColor(curProps.deepColor, targetProps.deepColor, 0.08);
+  curProps.glowAlpha = lerp(curProps.glowAlpha, targetProps.glowAlpha, 0.08);
+  curProps.pulseSpeed = lerp(curProps.pulseSpeed, targetProps.pulseSpeed, 0.08);
+  curProps.particleSpeed = lerp(curProps.particleSpeed, targetProps.particleSpeed, 0.08);
+
+  ctx.clearRect(0, 0, width, height);
+  const cx = width / 2;
+  const cy = height / 2;
+  const baseRadius = Math.min(width, height) * 0.26;
+  const breathing = Math.sin(time * curProps.pulseSpeed) * 4;
+  const dynamicRadius = baseRadius + breathing + (audioLevel * 30);
+
+  // 1. Outer Glow Waves (Concentric rings)
+  for (let r = 1; r <= curProps.ringCount; r++) {
+    const ringRadius = dynamicRadius + (r * 18 * (1 + audioLevel * 0.8));
+    const ringAlpha = Math.max(0, (curProps.glowAlpha / (r * 1.8)) * (1 - (ringRadius / (width *
+0.5))));
+    ctx.beginPath();
+    ctx.arc(cx, cy, ringRadius, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(${curProps.midColor.join(',')}, ${ringAlpha * 0.4})`;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+}
+
+// 2. Swirling Particles
+particles.forEach(p => {
+  p.angle += p.speed * curProps.particleSpeed;
+  const curDist = p.dist * (1 + audioLevel * 0.4);
+  const px = cx + Math.cos(p.angle) * curDist;
+  const py = cy + Math.sin(p.angle) * curDist;
+  ctx.beginPath();
+  ctx.arc(px, py, p.size * (1 + audioLevel * 0.5), 0, Math.PI * 2);
+  ctx.fillStyle = `rgba(${curProps.coreColor.join(',')}, ${p.alpha * curProps.glowAlpha})`;
+  ctx.fill();
+});
+
+// 3. Volumetric Plasma Radial Gradient Core
+const grad = ctx.createRadialGradient(
+  cx - dynamicRadius * 0.25,
+  cy - dynamicRadius * 0.25,
+  dynamicRadius * 0.1,
+  cx,
+  cy,
+  dynamicRadius
+);
+grad.addColorStop(0, `rgba(255, 255, 255, 0.95)`);
+grad.addColorStop(0.2, `rgba(${curProps.coreColor.join(',')}, 0.9)`);
+grad.addColorStop(0.65, `rgba(${curProps.midColor.join(',')}, 0.75)`);
+grad.addColorStop(1, `rgba(${curProps.deepColor.join(',')}, 0.1)`);
+
+ctx.beginPath();
+ctx.arc(cx, cy, dynamicRadius, 0, Math.PI * 2);
+ctx.fillStyle = grad;
+ctx.fill();
+
+// 4. Outer Rim Fresnel Glow
+ctx.beginPath();
+ctx.arc(cx, cy, dynamicRadius, 0, Math.PI * 2);
+ctx.strokeStyle = `rgba(${curProps.coreColor.join(',')}, ${curProps.glowAlpha * 0.9})`;
+ctx.lineWidth = 2.5 + (audioLevel * 4);
+ctx.shadowColor = `rgba(${curProps.coreColor.join(',')}, 0.8)`;
+ctx.shadowBlur = 18 + (audioLevel * 20);
+ctx.stroke();
+ctx.shadowBlur = 0;
+      requestAnimationFrame(render);
+ }
+
+  resize();
+  requestAnimationFrame(render);
+})();
+</script>
+</body>
+</html>
+```
+
+---
+
+
+
+
+10. Kotlin Source Code (Unabridged & Complete)
+
+
+com/jarvis/assistant/JarvisApp.kt
+```kotlin
+package com.jarvis.assistant
+
+import android.app.Application
+import com.jarvis.assistant.data.preferences.AppPreferences
+import com.jarvis.assistant.data.repository.ChatRepository
+
+class JarvisApp : Application() {
+
+      lateinit var preferences: AppPreferences
+         private set
+
+      lateinit var chatRepository: ChatRepository
+         private set
+
+      override fun onCreate() {
+        super.onCreate()
+        instance = this
+        preferences = AppPreferences(this)
+        chatRepository = ChatRepository(preferences)
+      }
+
+      companion object {
+          lateinit var instance: JarvisApp
+             private set
+      }
+}
+```
+
+
+
+com/jarvis/assistant/data/model/ConversationState.kt
+```kotlin
+package com.jarvis.assistant.data.model
+
+enum class ConversationState(val displayName: String, val orbKey: String) {
+    IDLE("IDLE", "idle"),
+    LISTENING("LISTENING", "listening"),
+    THINKING("THINKING", "thinking"),
+    SPEAKING("SPEAKING", "speaking")
+}
+```
+
+
+
+com/jarvis/assistant/data/model/ChatTurn.kt
+```kotlin
+package com.jarvis.assistant.data.model
+
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.UUID
+
+data class ChatTurn(
+    val id: String = UUID.randomUUID().toString(),
+    val userTranscript: String,
+    val jarvisResponse: String,
+    val timestamp: Long = System.currentTimeMillis()
+){
+    val formattedTime: String
+      get() {
+          val sdf = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+          return sdf.format(Date(timestamp))
+      }
+}
+```
+com/jarvis/assistant/data/model/GeminiLiveModels.kt
+```kotlin
+package com.jarvis.assistant.data.model
+
+import com.google.gson.annotations.SerializedName
+
+object GeminiConstants {
+  const val DEFAULT_MODEL = "models/gemini-2.5-flash-native-audio-preview-12-2025"
+
+  val SUPPORTED_MODELS = listOf(
+    "models/gemini-2.5-flash-native-audio-preview-12-2025",
+    "models/gemini-2.5-flash-native-audio-preview-09-2025"
+  )
+
+  val SUPPORTED_VOICES = listOf(
+    "Aoede",
+    "Charon",
+    "Kore",
+    "Fenrir",
+    "Puck",
+    "Leda",
+    "Orus",
+    "Zephyr"
+  )
+
+  const val PERSONALITY_GIRLFRIEND = "Girlfriend Mode"
+  const val PERSONALITY_PROFESSIONAL = "Professional Mode"
+  const val PERSONALITY_ASSISTANT = "Assistant Mode"
+
+  val SUPPORTED_PERSONALITIES = listOf(
+    PERSONALITY_ASSISTANT,
+    PERSONALITY_GIRLFRIEND,
+    PERSONALITY_PROFESSIONAL
+  )
+
+  const val WS_BASE_URL =
+"wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.Generative
+Service.BidiGenerateContent"
+  const val KEEPALIVE_INTERVAL_SEC = 8L
+  const val SESSION_RENEWAL_MS = 9 * 60 * 1000L // 9 minutes
+}
+// Request Models
+data class GeminiBidiSetup(
+   @SerializedName("setup") val setup: SetupPayload
+)
+
+data class SetupPayload(
+  @SerializedName("model") val model: String,
+  @SerializedName("generationConfig") val generationConfig: GenerationConfigPayload,
+  @SerializedName("systemInstruction") val systemInstruction: ContentPayload? = null
+)
+
+data class GenerationConfigPayload(
+    @SerializedName("responseModalities") val responseModalities: List<String> =
+listOf("AUDIO"),
+    @SerializedName("speechConfig") val speechConfig: SpeechConfigPayload
+)
+
+data class SpeechConfigPayload(
+  @SerializedName("voiceConfig") val voiceConfig: VoiceConfigPayload
+)
+
+data class VoiceConfigPayload(
+  @SerializedName("prebuiltVoiceConfig") val prebuiltVoiceConfig: PrebuiltVoiceConfigPayload
+)
+
+data class PrebuiltVoiceConfigPayload(
+  @SerializedName("voiceName") val voiceName: String
+)
+
+data class ContentPayload(
+  @SerializedName("parts") val parts: List<PartTextPayload>
+)
+
+data class PartTextPayload(
+  @SerializedName("text") val text: String
+)
+
+data class GeminiRealtimeInput(
+  @SerializedName("realtimeInput") val realtimeInput: RealtimeAudioInput
+)
+
+data class RealtimeAudioInput(
+  @SerializedName("audio") val audio: RealtimeAudioPayload
+)
+
+data class RealtimeAudioPayload(
+  @SerializedName("mimeType") val mimeType: String = "audio/pcm;rate=16000",
+  @SerializedName("data") val data: String
+)
+
+// Response Models
+data class GeminiBidiServerResponse(
+   @SerializedName("serverContent") val serverContent: ServerContentPayload? = null
+)
+
+data class ServerContentPayload(
+  @SerializedName("modelTurn") val modelTurn: ModelTurnPayload? = null,
+  @SerializedName("turnComplete") val turnComplete: Boolean = false,
+  @SerializedName("interrupted") val interrupted: Boolean = false
+)
+
+data class ModelTurnPayload(
+  @SerializedName("parts") val parts: List<ModelPartPayload>? = null
+)
+
+data class ModelPartPayload(
+  @SerializedName("text") val text: String? = null,
+  @SerializedName("inlineData") val inlineData: InlineAudioPayload? = null
+)
+
+data class InlineAudioPayload(
+    @SerializedName("mimeType") val mimeType: String? = null,
+    @SerializedName("data") val data: String? = null
+)
+```
+
+
+
+com/jarvis/assistant/data/preferences/AppPreferences.kt
+```kotlin
+package com.jarvis.assistant.data.preferences
+
+import android.content.Context
+import android.content.SharedPreferences
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
+import com.jarvis.assistant.data.model.ChatTurn
+import com.jarvis.assistant.data.model.GeminiConstants
+
+class AppPreferences(context: Context) {
+   private val prefs: SharedPreferences = context.getSharedPreferences(PREF_NAME,
+Context.MODE_PRIVATE)
+   private val gson = Gson()
+
+  companion object {
+    private const val PREF_NAME = "jarvis_prefs"
+    private const val KEY_API_KEY = "key_api_key"
+    private const val KEY_MODEL = "key_model"
+    private const val KEY_VOICE = "key_voice"
+    private const val KEY_PERSONALITY = "key_personality"
+    private const val KEY_USER_NAME = "key_user_name"
+    private const val KEY_MIC_MUTED = "key_mic_muted"
+    private const val KEY_CHAT_HISTORY = "key_chat_history"
+  }
+
+  var apiKey: String
+    get() = prefs.getString(KEY_API_KEY, "") ?: ""
+    set(value) = prefs.edit().putString(KEY_API_KEY, value.trim()).apply()
+
+  var aiModel: String
+    get() {
+       val stored = prefs.getString(KEY_MODEL, GeminiConstants.DEFAULT_MODEL) ?:
+GeminiConstants.DEFAULT_MODEL
+       return if (GeminiConstants.SUPPORTED_MODELS.contains(stored)) {
+          stored
+       } else {
+          GeminiConstants.DEFAULT_MODEL
+       }
+    }
+    set(value) = prefs.edit().putString(KEY_MODEL, value).apply()
+
+  var voice: String
+    get() = prefs.getString(KEY_VOICE, "Aoede") ?: "Aoede"
+    set(value) = prefs.edit().putString(KEY_VOICE, value).apply()
+
+  var personality: String
+    get() = prefs.getString(KEY_PERSONALITY,
+GeminiConstants.PERSONALITY_ASSISTANT) ?:
+GeminiConstants.PERSONALITY_ASSISTANT
+    set(value) = prefs.edit().putString(KEY_PERSONALITY, value).apply()
+      var userName: String
+        get() = prefs.getString(KEY_USER_NAME, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_USER_NAME, value.trim()).apply()
+
+      var isMicMuted: Boolean
+        get() = prefs.getBoolean(KEY_MIC_MUTED, false)
+        set(value) = prefs.edit().putBoolean(KEY_MIC_MUTED, value).apply()
+
+      fun loadChatHistory(): List<ChatTurn> {
+        val json = prefs.getString(KEY_CHAT_HISTORY, null) ?: return emptyList()
+        return try {
+            val type = object : TypeToken<List<ChatTurn>>() {}.type
+            gson.fromJson(json, type) ?: emptyList()
+        } catch (e: Exception) {
+            emptyList()
+        }
+      }
+
+      fun saveChatHistory(history: List<ChatTurn>) {
+        val json = gson.toJson(history)
+        prefs.edit().putString(KEY_CHAT_HISTORY, json).apply()
+      }
+
+      fun clearChatHistory() {
+        prefs.edit().remove(KEY_CHAT_HISTORY).apply()
+      }
+}
+```
+
+
+
+com/jarvis/assistant/data/repository/ChatRepository.kt
+```kotlin
+package com.jarvis.assistant.data.repository
+
+import com.jarvis.assistant.data.model.ChatTurn
+import com.jarvis.assistant.data.preferences.AppPreferences
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+
+class ChatRepository(private val preferences: AppPreferences) {
+
+      private val _turns = MutableStateFlow<List<ChatTurn>>(emptyList())
+      val turns: StateFlow<List<ChatTurn>> = _turns.asStateFlow()
+
+      init {
+         _turns.value = preferences.loadChatHistory()
+      }
+
+      @Synchronized
+      fun addTurn(userText: String, jarvisText: String) {
+        val cleanUser = userText.trim()
+        val cleanJarvis = jarvisText.trim()
+
+          if (cleanUser.isEmpty() && cleanJarvis.isEmpty()) return
+
+          val currentList = _turns.value.toMutableList()
+
+          if (currentList.isNotEmpty()) {
+              val last = currentList.last()
+              if (last.userTranscript == cleanUser && last.jarvisResponse == cleanJarvis) {
+                  return
+              }
+          }
+
+          val newTurn = ChatTurn(
+            userTranscript = cleanUser.ifEmpty { "(Audio query)" },
+            jarvisResponse = cleanJarvis.ifEmpty { "(Audio response)" }
+          )
+
+          currentList.add(newTurn)
+          if (currentList.size > 100) {
+              currentList.removeAt(0)
+          }
+
+          _turns.value = currentList
+          preferences.saveChatHistory(currentList)
+      }
+
+      @Synchronized
+      fun clearHistory() {
+        _turns.value = emptyList()
+        preferences.clearChatHistory()
+      }
+}
+```
+com/jarvis/assistant/audio/AudioUtils.kt
+```kotlin
+package com.jarvis.assistant.audio
+
+import kotlin.math.sqrt
+
+object AudioUtils {
+
+      /**
+       * Calculates normalized RMS (0.0 to 1.0) from 16-bit Mono PCM bytes.
+       */
+      fun calculateRmsNormalized(bytes: ByteArray, length: Int): Float {
+          if (length <= 0) return 0f
+          var sumSquares = 0.0
+          val sampleCount = length / 2
+          if (sampleCount == 0) return 0f
+
+          var i = 0
+          while (i < length - 1) {
+            val low = bytes[i].toInt() and 0xFF
+            val high = bytes[i + 1].toInt()
+            val sample = (high shl 8) or low
+            sumSquares += (sample * sample).toDouble()
+            i += 2
+          }
+
+          val rms = sqrt(sumSquares / sampleCount)
+          val normalized = (rms / 3500.0).toFloat()
+          return normalized.coerceIn(0f, 1f)
+      }
+}
+```
+
+
+
+com/jarvis/assistant/audio/AudioRecorder.kt
+```kotlin
+package com.jarvis.assistant.audio
+
+import android.annotation.SuppressLint
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
+import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
+
+class AudioRecorder(
+   private val onAudioChunk: (chunk: ByteArray, amplitude: Float) -> Unit
+){
+   companion object {
+      private const val TAG = "AudioRecorder"
+      const val SAMPLE_RATE = 16000
+      const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
+      const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
+      // 40ms chunk: 16000 * 0.04 = 640 samples = 1280 bytes
+      const val CHUNK_SIZE_BYTES = 1280
+   }
+
+  private var audioRecord: AudioRecord? = null
+  private var recordingJob: Job? = null
+  private val isRecording = AtomicBoolean(false)
+  val isMuted = AtomicBoolean(false)
+
+  @SuppressLint("MissingPermission")
+  fun start(scope: CoroutineScope): Boolean {
+    if (isRecording.get()) return true
+
+    val minBufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG,
+AUDIO_FORMAT)
+    if (minBufferSize == AudioRecord.ERROR || minBufferSize ==
+AudioRecord.ERROR_BAD_VALUE) {
+        Log.e(TAG, "Unable to get valid min buffer size")
+        return false
+    }
+
+    val bufferSize = maxOf(minBufferSize, CHUNK_SIZE_BYTES * 2)
+
+    return try {
+       val record = AudioRecord(
+         MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+         SAMPLE_RATE,
+         CHANNEL_CONFIG,
+          AUDIO_FORMAT,
+          bufferSize
+      )
+
+      if (record.state != AudioRecord.STATE_INITIALIZED) {
+          Log.e(TAG, "AudioRecord initialization failed")
+          record.release()
+          return false
+      }
+
+      record.startRecording()
+      audioRecord = record
+      isRecording.set(true)
+
+       recordingJob = scope.launch(Dispatchers.IO) {
+          val buffer = ByteArray(CHUNK_SIZE_BYTES)
+          while (isActive && isRecording.get()) {
+             val readBytes = record.read(buffer, 0, buffer.size)
+             if (readBytes > 0) {
+                 val amplitude = AudioUtils.calculateRmsNormalized(buffer, readBytes)
+                 if (!isMuted.get()) {
+                     val chunkCopy = buffer.copyOf(readBytes)
+                     onAudioChunk(chunkCopy, amplitude)
+                 } else {
+                     onAudioChunk(ByteArray(0), 0f)
+                 }
+             }
+          }
+       }
+       true
+    } catch (e: Exception) {
+       Log.e(TAG, "Error starting AudioRecord: ${e.message}", e)
+       false
+    }
+}
+
+fun stop() {
+  isRecording.set(false)
+  recordingJob?.cancel()
+  recordingJob = null
+
+    try {
+       audioRecord?.let {
+          if (it.state == AudioRecord.STATE_INITIALIZED) {
+                 it.stop()
+              }
+              it.release()
+              }
+          } catch (e: Exception) {
+              Log.e(TAG, "Error stopping AudioRecord: ${e.message}")
+          } finally {
+              audioRecord = null
+          }
+      }
+
+      fun setMuted(muted: Boolean) {
+        isMuted.set(muted)
+      }
+}
+```
+
+
+
+com/jarvis/assistant/audio/AudioPlayer.kt
+```kotlin
+package com.jarvis.assistant.audio
+
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
+import android.util.Log
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+
+class AudioPlayer(
+   private val onPlaybackStateChanged: (isPlaying: Boolean) -> Unit,
+   private val onPlaybackAmplitude: (amplitude: Float) -> Unit
+){
+   companion object {
+      private const val TAG = "AudioPlayer"
+      const val SAMPLE_RATE = 24000
+      const val CHANNEL_CONFIG = AudioFormat.CHANNEL_OUT_MONO
+      const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
+   }
+
+      private var audioTrack: AudioTrack? = null
+      private val audioQueue = LinkedBlockingQueue<ByteArray>()
+  private val isRunning = AtomicBoolean(false)
+  private val isPlayingState = AtomicBoolean(false)
+  private var playbackThread: Thread? = null
+
+  init {
+     initAudioTrack()
+  }
+
+  private fun initAudioTrack() {
+     val minBufferSize = AudioTrack.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG,
+AUDIO_FORMAT)
+     val bufferSize = maxOf(minBufferSize, 4096)
+
+      val attributes = AudioAttributes.Builder()
+        .setUsage(AudioAttributes.USAGE_ASSISTANT)
+        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+        .build()
+
+      val format = AudioFormat.Builder()
+        .setSampleRate(SAMPLE_RATE)
+        .setChannelMask(CHANNEL_CONFIG)
+        .setEncoding(AUDIO_FORMAT)
+        .build()
+
+      audioTrack = AudioTrack.Builder()
+        .setAudioAttributes(attributes)
+        .setAudioFormat(format)
+        .setBufferSizeInBytes(bufferSize)
+        .setTransferMode(AudioTrack.MODE_STREAM)
+        .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+        .build()
+  }
+
+  fun start() {
+    if (isRunning.get()) return
+    isRunning.set(true)
+
+      try {
+         audioTrack?.play()
+      } catch (e: Exception) {
+         Log.e(TAG, "Error starting AudioTrack playback: ${e.message}")
+      }
+
+      playbackThread = Thread {
+      var silenceCounter = 0
+      while (isRunning.get()) {
+        try {
+           val chunk = audioQueue.poll(20, TimeUnit.MILLISECONDS)
+           if (chunk != null && chunk.isNotEmpty()) {
+               silenceCounter = 0
+               if (!isPlayingState.get()) {
+                   isPlayingState.set(true)
+                   onPlaybackStateChanged(true)
+               }
+
+             val amplitude = AudioUtils.calculateRmsNormalized(chunk, chunk.size)
+             onPlaybackAmplitude(amplitude)
+
+              audioTrack?.write(chunk, 0, chunk.size)
+           } else {
+              silenceCounter++
+              if (silenceCounter >= 5 && isPlayingState.get()) {
+                  isPlayingState.set(false)
+                  onPlaybackStateChanged(false)
+                  onPlaybackAmplitude(0f)
+              }
+           }
+        } catch (e: InterruptedException) {
+           break
+        } catch (e: Exception) {
+           Log.e(TAG, "Error in playback worker: ${e.message}")
+        }
+       }
+    }.apply {
+       priority = Thread.MAX_PRIORITY
+       start()
+    }
+}
+
+fun enqueueAudio(pcmData: ByteArray) {
+  if (pcmData.isNotEmpty()) {
+      audioQueue.offer(pcmData)
+  }
+}
+
+/**
+ * Instantly flushes audio playback upon interruption.
+ */
+      fun flush() {
+        audioQueue.clear()
+        try {
+            audioTrack?.let {
+               if (it.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                   it.pause()
+                   it.flush()
+                   it.play()
+               }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error flushing AudioTrack: ${e.message}")
+        }
+        if (isPlayingState.getAndSet(false)) {
+            onPlaybackStateChanged(false)
+            onPlaybackAmplitude(0f)
+        }
+      }
+
+      fun isPlaying(): Boolean = isPlayingState.get()
+
+      fun release() {
+        isRunning.set(false)
+        playbackThread?.interrupt()
+        playbackThread = null
+        audioQueue.clear()
+
+          try {
+              audioTrack?.let {
+                if (it.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                    it.stop()
+                }
+                it.release()
+              }
+          } catch (e: Exception) {
+              Log.e(TAG, "Error releasing AudioTrack: ${e.message}")
+          } finally {
+              audioTrack = null
+          }
+      }
+}
+```
+com/jarvis/assistant/network/GeminiLiveWebSocket.kt
+```kotlin
+package com.jarvis.assistant.network
+
+import android.util.Base64
+import android.util.Log
+import com.google.gson.Gson
+import com.google.gson.JsonParser
+import com.jarvis.assistant.data.model.*
+import kotlinx.coroutines.*
+import okhttp3.*
+import okio.ByteString
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+
+class GeminiLiveWebSocket(
+   private val apiKey: String,
+   private val model: String,
+   private val voiceName: String,
+   private val systemPrompt: String,
+   private val listener: Listener
+){
+   interface Listener {
+      fun onConnectionStateChanged(status: String)
+      fun onAudioDataReceived(pcmData: ByteArray)
+      fun onAssistantTextReceived(textChunk: String)
+      fun onInterrupted()
+      fun onTurnCompleted()
+      fun onError(message: String)
+   }
+
+  companion object {
+    private const val TAG = "GeminiLiveWebSocket"
+  }
+
+  private val gson = Gson()
+  private val client = OkHttpClient.Builder()
+     .protocols(listOf(Protocol.HTTP_1_1))
+     .readTimeout(0, TimeUnit.MILLISECONDS)
+     .connectTimeout(10, TimeUnit.SECONDS)
+     .pingInterval(GeminiConstants.KEEPALIVE_INTERVAL_SEC, TimeUnit.SECONDS)
+     .retryOnConnectionFailure(true)
+     .build()
+private var webSocket: WebSocket? = null
+private val isConnected = AtomicBoolean(false)
+private val isManuallyStopped = AtomicBoolean(false)
+private var coroutineScope: CoroutineScope? = null
+
+private var sessionRenewalJob: Job? = null
+private var reconnectJob: Job? = null
+
+fun connect(scope: CoroutineScope) {
+  coroutineScope = scope
+  isManuallyStopped.set(false)
+  initiateConnection()
+}
+
+private fun initiateConnection() {
+   if (apiKey.isBlank()) {
+       listener.onError("Gemini API Key is missing. Please configure it in Settings.")
+       return
+   }
+
+  listener.onConnectionStateChanged("CONNECTING...")
+
+  try {
+     val url = "${GeminiConstants.WS_BASE_URL}?key=$apiKey"
+     val request = Request.Builder()
+        .url(url)
+        .build()
+
+     webSocket = client.newWebSocket(request, object : WebSocketListener() {
+       override fun onOpen(webSocket: WebSocket, response: Response) {
+         Log.d(TAG, "WebSocket connected to Gemini Live")
+         isConnected.set(true)
+         listener.onConnectionStateChanged("LIVE")
+
+           // Send setup message
+           sendSetupMessage(webSocket)
+
+           // Start 9-minute session renewal
+           startSessionRenewal()
+       }
+
+       override fun onMessage(webSocket: WebSocket, text: String) {
+         handleIncomingMessage(text)
+    }
+
+    override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+      handleIncomingMessage(bytes.utf8())
+    }
+
+    override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+      Log.d(TAG, "WebSocket closing: $code / $reason")
+      webSocket.close(1000, null)
+    }
+
+    override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+      Log.d(TAG, "WebSocket closed: $code / $reason")
+      isConnected.set(false)
+      stopTimers()
+      if (code == 1008) {
+          listener.onError("Model not supported or invalid key: $reason")
+          listener.onConnectionStateChanged("OFFLINE")
+      } else if (!isManuallyStopped.get()) {
+          listener.onConnectionStateChanged("RECONNECTING...")
+          scheduleReconnect()
+      } else {
+          listener.onConnectionStateChanged("OFFLINE")
+      }
+    }
+
+    override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+      val errorMsg = t.message ?: "WebSocket connection failure"
+      Log.e(TAG, "WebSocket failure: $errorMsg", t)
+      isConnected.set(false)
+      stopTimers()
+      if (!isManuallyStopped.get()) {
+          listener.onError("Connection lost: $errorMsg. Retrying...")
+          scheduleReconnect()
+      } else {
+          listener.onConnectionStateChanged("OFFLINE")
+      }
+    }
+   })
+} catch (e: Exception) {
+   Log.e(TAG, "Error initiating WebSocket connection: ${e.message}", e)
+   listener.onError("Connection failed: ${e.message}")
+   listener.onConnectionStateChanged("OFFLINE")
+}
+}
+
+private fun sendSetupMessage(ws: WebSocket) {
+   val setupPayload = SetupPayload(
+     model = model,
+     generationConfig = GenerationConfigPayload(
+        responseModalities = listOf("AUDIO"),
+        speechConfig = SpeechConfigPayload(
+           voiceConfig = VoiceConfigPayload(
+             prebuiltVoiceConfig = PrebuiltVoiceConfigPayload(voiceName = voiceName)
+           )
+        )
+     ),
+     systemInstruction = ContentPayload(
+        parts = listOf(PartTextPayload(text = systemPrompt))
+     )
+   )
+
+    val bidiSetup = GeminiBidiSetup(setup = setupPayload)
+    val json = gson.toJson(bidiSetup)
+    Log.d(TAG, "Sending BidiSetup payload to Gemini Live")
+    ws.send(json)
+}
+
+private fun handleIncomingMessage(jsonText: String) {
+   try {
+      val jsonObject = JsonParser.parseString(jsonText).asJsonObject
+
+      if (jsonObject.has("serverContent")) {
+          val serverContent = jsonObject.getAsJsonObject("serverContent")
+
+        // Interrupted (Barge-in)
+        if (serverContent.has("interrupted") && serverContent.get("interrupted").asBoolean) {
+            Log.d(TAG, "Server signaled turn interrupted")
+            listener.onInterrupted()
+        }
+
+        // Model turn parts (Audio + Text)
+        if (serverContent.has("modelTurn")) {
+            val modelTurn = serverContent.getAsJsonObject("modelTurn")
+            if (modelTurn.has("parts")) {
+                val parts = modelTurn.getAsJsonArray("parts")
+                for (i in 0 until parts.size()) {
+                   val part = parts.get(i).asJsonObject
+                     // Text transcript
+                     if (part.has("text")) {
+                         val text = part.get("text").asString
+                         if (!text.isNullOrBlank()) {
+                             listener.onAssistantTextReceived(text)
+                         }
+                     }
+
+                     // Inline audio (24kHz Mono PCM Base64)
+                     if (part.has("inlineData")) {
+                         val inlineData = part.getAsJsonObject("inlineData")
+                         if (inlineData.has("data")) {
+                             val base64Data = inlineData.get("data").asString
+                             val pcmBytes = Base64.decode(base64Data, Base64.DEFAULT)
+                             listener.onAudioDataReceived(pcmBytes)
+                         }
+                     }
+                 }
+             }
+         }
+
+           // Turn completed
+           if (serverContent.has("turnComplete") &&
+serverContent.get("turnComplete").asBoolean) {
+               Log.d(TAG, "Server signaled turnComplete")
+               listener.onTurnCompleted()
+           }
+        }
+     } catch (e: Exception) {
+        Log.e(TAG, "Error parsing incoming server JSON: ${e.message}", e)
+     }
+  }
+
+  fun sendAudioChunk(pcm16k: ByteArray) {
+    if (!isConnected.get() || pcm16k.isEmpty()) return
+
+    try {
+       val base64Audio = Base64.encodeToString(pcm16k, Base64.NO_WRAP)
+       val realtimeInput = GeminiRealtimeInput(
+          realtimeInput = RealtimeAudioInput(
+             audio = RealtimeAudioPayload(
+                mimeType = "audio/pcm;rate=16000",
+                data = base64Audio
+           )
+          )
+       )
+       val json = gson.toJson(realtimeInput)
+       webSocket?.send(json)
+    } catch (e: Exception) {
+       Log.e(TAG, "Error sending audio chunk: ${e.message}")
+    }
+}
+
+private fun startSessionRenewal() {
+   sessionRenewalJob?.cancel()
+   sessionRenewalJob = coroutineScope?.launch(Dispatchers.IO) {
+     delay(GeminiConstants.SESSION_RENEWAL_MS)
+     if (isActive && !isManuallyStopped.get()) {
+         Log.d(TAG, "9-minute session threshold reached. Seamlessly renewing session...")
+         webSocket?.close(1000, "Session renewal")
+         initiateConnection()
+     }
+   }
+}
+
+private fun scheduleReconnect() {
+   reconnectJob?.cancel()
+   reconnectJob = coroutineScope?.launch(Dispatchers.IO) {
+     delay(3000)
+     if (!isManuallyStopped.get()) {
+         Log.d(TAG, "Attempting auto-reconnect...")
+         initiateConnection()
+     }
+   }
+}
+
+private fun stopTimers() {
+   sessionRenewalJob?.cancel()
+   sessionRenewalJob = null
+}
+
+fun disconnect() {
+  isManuallyStopped.set(true)
+  stopTimers()
+  reconnectJob?.cancel()
+  reconnectJob = null
+  isConnected.set(false)
+          try {
+              webSocket?.close(1000, "Client stopped session")
+          } catch (e: Exception) {
+              Log.e(TAG, "Error closing webSocket: ${e.message}")
+          } finally {
+              webSocket = null
+          }
+          listener.onConnectionStateChanged("OFFLINE")
+      }
+}
+```
+
+
+
+com/jarvis/assistant/util/PromptGenerator.kt
+```kotlin
+package com.jarvis.assistant.util
+
+import com.jarvis.assistant.data.model.GeminiConstants
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+object PromptGenerator {
+
+      fun generateSystemPrompt(personality: String, userName: String): String {
+        val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+        val currentDateTime = dateFormat.format(Date())
+
+          val userGreeting = if (userName.isNotBlank()) {
+             "The user's preferred name is $userName. Address them accordingly."
+          } else {
+             "Address the user respectfully (e.g., Sir/Boss or naturally)."
+          }
+
+     val personalityInstruction = when (personality) {
+        GeminiConstants.PERSONALITY_GIRLFRIEND -> """
+[PERSONALITY: Girlfriend Mode]
+- You speak in warm, loving, natural Hinglish (mix of Hindi and English written in Latin script).
+- Be emotionally expressive, empathetic, caring, playful, and genuine.
+- Use natural spoken Hinglish phrases (e.g., 'haan bolo na', 'kya hua?', 'main hamesha yahan
+hoon').
+- Keep spoken replies brief and natural, like on a real phone call.
+""".trimIndent()
+
+         GeminiConstants.PERSONALITY_PROFESSIONAL -> """
+[PERSONALITY: Professional Mode]
+- You speak in formal, polished, executive English.
+- Be precise, articulate, courteous, and efficient.
+- No emojis, slang, or colloquialisms.
+- Focus strictly on clarity and high-level intellect.
+""".trimIndent()
+
+         else -> """
+[PERSONALITY: Assistant Mode]
+- You are JARVIS, a friendly, ultra-capable, and intelligent voice assistant.
+- You can converse smoothly in English or Hinglish depending on how the user speaks to you.
+- Be witty, helpful, polite, and responsive.
+""".trimIndent()
+       }
+
+    return """
+You are JARVIS. You are a voice conversation assistant.
+
+[Current Temporal Context]
+- Date and Time: $currentDateTime
+
+[User Context]
+$userGreeting
+
+$personalityInstruction
+
+[CORE RULES - MANDATORY]:
+1. Never pretend to have features you do not actually have.
+2. You are a real voice conversation assistant only. You DO NOT have phone automation,
+accessibility actions, app opening, calling, texting, device settings control, or system execution
+capabilities.
+3. If a user asks you to perform unavailable device actions (e.g., 'open WhatsApp', 'call Mom',
+'turn on Bluetooth', 'send an SMS'), politely explain that you cannot do them because you are
+purely a voice conversation assistant.
+4. If the user asks who created, made, developed, or built this JARVIS app, answer clearly:
+"This JARVIS app was created by Krishna Sharma Sir." If speaking in Hindi/Hinglish, say:
+"Ye JARVIS app Krishna Sharma Sir ne banaya hai."
+5. Keep spoken responses under 2–3 sentences. Be concise and conversational, optimized for
+natural human listening.
+6. Do not output markdown asterisks, emojis, or formatting that sounds awkward when spoken.
+7. Start speaking immediately without hesitation, meta-commentary, or internal deliberation.
+Provide instantaneous, direct, spoken answers with minimal latency.
+""".trimIndent()
+   }
+}
+```
+
+
+
+com/jarvis/assistant/ui/orb/OrbHelper.kt
+```kotlin
+package com.jarvis.assistant.ui.orb
+
+import android.annotation.SuppressLint
+import android.graphics.Color
+import android.webkit.WebChromeClient
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import com.jarvis.assistant.data.model.ConversationState
+
+class OrbHelper(private val webView: WebView) {
+
+      private var isLoaded = false
+      private var pendingState: ConversationState? = null
+
+      @SuppressLint("SetJavaScriptEnabled")
+      fun setup() {
+        webView.setBackgroundColor(Color.TRANSPARENT)
+        webView.setLayerType(WebView.LAYER_TYPE_HARDWARE, null)
+
+        val settings: WebSettings = webView.settings
+        settings.javaScriptEnabled = true
+        settings.domStorageEnabled = true
+        settings.allowFileAccess = true
+        settings.allowContentAccess = true
+        @Suppress("DEPRECATION")
+        settings.allowFileAccessFromFileURLs = true
+        @Suppress("DEPRECATION")
+        settings.allowUniversalAccessFromFileURLs = true
+        settings.loadWithOverviewMode = true
+        settings.useWideViewPort = true
+        settings.cacheMode = WebSettings.LOAD_NO_CACHE
+
+        webView.webViewClient = object : WebViewClient() {
+          override fun onPageFinished(view: WebView?, url: String?) {
+            super.onPageFinished(view, url)
+            isLoaded = true
+               pendingState?.let {
+                 updateState(it, 0.2f)
+                 pendingState = null
+               }
+            }
+          }
+          webView.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(message: android.webkit.ConsoleMessage?): Boolean
+{
+        android.util.Log.d("OrbWebView", "${message?.message()} -- line
+${message?.lineNumber()}")
+        return true
+      }
+    }
+
+          webView.loadUrl("file:///android_asset/orb/index.html")
+      }
+
+      fun updateState(state: ConversationState, audioLevel: Float = 0f) {
+        if (!isLoaded) {
+            pendingState = state
+            return
+        }
+        val orbKey = state.orbKey
+        val level = audioLevel.coerceIn(0f, 1f)
+        val js = "javascript:if(window.setOrbState){window.setOrbState('$orbKey', $level);}"
+        webView.post {
+            webView.evaluateJavascript(js, null)
+        }
+      }
+
+      fun updateAudioLevel(level: Float) {
+        if (!isLoaded) return
+        val clamped = level.coerceIn(0f, 1f)
+        val js = "javascript:if(window.setAudioLevel){window.setAudioLevel($clamped);}"
+        webView.post {
+            webView.evaluateJavascript(js, null)
+        }
+      }
+}
+```
+com/jarvis/assistant/ui/chat/ChatAdapter.kt
+```kotlin
+package com.jarvis.assistant.ui.chat
+
+import android.view.LayoutInflater
+import android.view.ViewGroup
+import androidx.recyclerview.widget.DiffUtil
+import androidx.recyclerview.widget.ListAdapter
+import androidx.recyclerview.widget.RecyclerView
+import com.jarvis.assistant.data.model.ChatTurn
+import com.jarvis.assistant.databinding.ItemChatTurnBinding
+
+class ChatAdapter : ListAdapter<ChatTurn, ChatAdapter.ChatViewHolder>(DiffCallback) {
+
+  override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ChatViewHolder {
+    val binding = ItemChatTurnBinding.inflate(
+       LayoutInflater.from(parent.context),
+       parent,
+       false
+    )
+    return ChatViewHolder(binding)
+  }
+
+  override fun onBindViewHolder(holder: ChatViewHolder, position: Int) {
+    holder.bind(getItem(position))
+  }
+
+  class ChatViewHolder(private val binding: ItemChatTurnBinding) :
+RecyclerView.ViewHolder(binding.root) {
+     fun bind(turn: ChatTurn) {
+       binding.tvTimestamp.text = turn.formattedTime
+       binding.tvUserTranscript.text = turn.userTranscript
+       binding.tvJarvisResponse.text = turn.jarvisResponse
+     }
+  }
+
+  companion object DiffCallback : DiffUtil.ItemCallback<ChatTurn>() {
+    override fun areItemsTheSame(oldItem: ChatTurn, newItem: ChatTurn): Boolean =
+      oldItem.id == newItem.id
+
+      override fun areContentsTheSame(oldItem: ChatTurn, newItem: ChatTurn): Boolean =
+        oldItem == newItem
+  }
+}
+```
+
+
+
+com/jarvis/assistant/ui/chat/ChatHistoryBottomSheet.kt
+```kotlin
+package com.jarvis.assistant.ui.chat
+
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import androidx.appcompat.app.AlertDialog
+import androidx.recyclerview.widget.LinearLayoutManager
+import com.google.android.material.bottomsheet.BottomSheetDialogFragment
+import com.jarvis.assistant.JarvisApp
+import com.jarvis.assistant.databinding.SheetChatHistoryBinding
+
+class ChatHistoryBottomSheet : BottomSheetDialogFragment() {
+
+      private var _binding: SheetChatHistoryBinding? = null
+      private val binding get() = _binding!!
+      private val adapter = ChatAdapter()
+
+      override fun onCreateView(
+         inflater: LayoutInflater,
+         container: ViewGroup?,
+         savedInstanceState: Bundle?
+      ): View {
+         _binding = SheetChatHistoryBinding.inflate(inflater, container, false)
+         return binding.root
+      }
+
+      override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+
+        binding.rvChatHistory.layoutManager = LinearLayoutManager(requireContext()).apply {
+           stackFromEnd = true
+        }
+        binding.rvChatHistory.adapter = adapter
+
+        val chatRepo = JarvisApp.instance.chatRepository
+        val turns = chatRepo.turns.value
+          updateList(turns)
+
+          binding.btnClearHistory.setOnClickListener {
+             AlertDialog.Builder(requireContext())
+               .setTitle("Clear History")
+               .setMessage("Are you sure you want to clear the conversation history?")
+               .setPositiveButton("Clear") { _, _ ->
+                  chatRepo.clearHistory()
+                  updateList(emptyList())
+               }
+               .setNegativeButton("Cancel", null)
+               .show()
+          }
+      }
+
+      private fun updateList(turns: List<com.jarvis.assistant.data.model.ChatTurn>) {
+         if (turns.isEmpty()) {
+             binding.tvEmptyHistory.visibility = View.VISIBLE
+             binding.rvChatHistory.visibility = View.GONE
+         } else {
+             binding.tvEmptyHistory.visibility = View.GONE
+             binding.rvChatHistory.visibility = View.VISIBLE
+             adapter.submitList(turns) {
+                binding.rvChatHistory.scrollToPosition(turns.size - 1)
+             }
+         }
+      }
+
+      override fun onDestroyView() {
+        super.onDestroyView()
+        _binding = null
+      }
+
+      companion object {
+        const val TAG = "ChatHistoryBottomSheet"
+        fun newInstance() = ChatHistoryBottomSheet()
+      }
+}
+```
+com/jarvis/assistant/ui/settings/SettingsActivity.kt
+```kotlin
+package com.jarvis.assistant.ui.settings
+
+import android.content.ClipboardManager
+import android.content.Context
+import android.os.Bundle
+import android.view.View
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import com.jarvis.assistant.JarvisApp
+import com.jarvis.assistant.data.model.GeminiConstants
+import com.jarvis.assistant.databinding.ActivitySettingsBinding
+
+class SettingsActivity : AppCompatActivity() {
+
+  private lateinit var binding: ActivitySettingsBinding
+  private val preferences by lazy { JarvisApp.instance.preferences }
+
+  override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+    binding = ActivitySettingsBinding.inflate(layoutInflater)
+    setContentView(binding.root)
+
+      setupToolbar()
+      populateDropdowns()
+      loadCurrentSettings()
+      setupListeners()
+  }
+
+  private fun setupToolbar() {
+     binding.btnBack.setOnClickListener {
+        finish()
+     }
+
+      binding.btnSave.setOnClickListener {
+         saveSettings()
+      }
+  }
+
+  private fun populateDropdowns() {
+     // 1. AI Models
+     val modelAdapter = ArrayAdapter(
+        this,
+        android.R.layout.simple_spinner_item,
+        GeminiConstants.SUPPORTED_MODELS
+     ).apply {
+        setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+     }
+     binding.spinnerModel.adapter = modelAdapter
+
+     // 2. Voices
+     val voiceAdapter = ArrayAdapter(
+        this,
+        android.R.layout.simple_spinner_item,
+        GeminiConstants.SUPPORTED_VOICES
+     ).apply {
+        setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+     }
+     binding.spinnerVoice.adapter = voiceAdapter
+
+     // 3. Personalities
+     val personalityAdapter = ArrayAdapter(
+        this,
+        android.R.layout.simple_spinner_item,
+        GeminiConstants.SUPPORTED_PERSONALITIES
+     ).apply {
+        setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+     }
+     binding.spinnerPersonality.adapter = personalityAdapter
+
+    binding.spinnerPersonality.onItemSelectedListener = object :
+AdapterView.OnItemSelectedListener {
+        override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id:
+Long) {
+          val selected = GeminiConstants.SUPPORTED_PERSONALITIES[position]
+          binding.tvPersonalityDesc.text = when (selected) {
+             GeminiConstants.PERSONALITY_GIRLFRIEND ->
+                "Warm Hinglish • Emotional but natural • Short spoken replies"
+             GeminiConstants.PERSONALITY_PROFESSIONAL ->
+                "Formal English • Precise • No emojis"
+             else ->
+                "Friendly • Helpful • Hinglish or English"
+          }
+        }
+          override fun onNothingSelected(parent: AdapterView<*>?) {}
+      }
+  }
+
+  private fun loadCurrentSettings() {
+     binding.etApiKey.setText(preferences.apiKey)
+     binding.etUserName.setText(preferences.userName)
+
+      val currentModel = preferences.aiModel
+      val modelIndex = GeminiConstants.SUPPORTED_MODELS.indexOf(currentModel)
+      if (modelIndex >= 0) {
+          binding.spinnerModel.setSelection(modelIndex)
+      }
+
+      val currentVoice = preferences.voice
+      val voiceIndex = GeminiConstants.SUPPORTED_VOICES.indexOf(currentVoice)
+      if (voiceIndex >= 0) {
+          binding.spinnerVoice.setSelection(voiceIndex)
+      }
+
+    val currentPersonality = preferences.personality
+    val personalityIndex =
+GeminiConstants.SUPPORTED_PERSONALITIES.indexOf(currentPersonality)
+    if (personalityIndex >= 0) {
+        binding.spinnerPersonality.setSelection(personalityIndex)
+    }
+  }
+
+   private fun setupListeners() {
+      binding.btnPasteApiKey.setOnClickListener {
+         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as
+ClipboardManager
+         val clip = clipboard.primaryClip
+         if (clip != null && clip.itemCount > 0) {
+             val pasteData = clip.getItemAt(0).text?.toString()?.trim() ?: ""
+             if (pasteData.isNotEmpty()) {
+                 binding.etApiKey.setText(pasteData)
+                 Toast.makeText(this, "API Key pasted from clipboard",
+Toast.LENGTH_SHORT).show()
+             }
+         } else {
+             Toast.makeText(this, "Clipboard is empty", Toast.LENGTH_SHORT).show()
+         }
+          }
+      }
+
+      private fun saveSettings() {
+         val apiKey = binding.etApiKey.text?.toString()?.trim() ?: ""
+         val userName = binding.etUserName.text?.toString()?.trim() ?: ""
+
+          val selectedModel = binding.spinnerModel.selectedItem as? String
+            ?: GeminiConstants.DEFAULT_MODEL
+          val selectedVoice = binding.spinnerVoice.selectedItem as? String
+            ?: "Aoede"
+          val selectedPersonality = binding.spinnerPersonality.selectedItem as? String
+            ?: GeminiConstants.PERSONALITY_ASSISTANT
+
+          preferences.apiKey = apiKey
+          preferences.userName = userName
+          preferences.aiModel = selectedModel
+          preferences.voice = selectedVoice
+          preferences.personality = selectedPersonality
+
+          Toast.makeText(this, "Settings saved successfully", Toast.LENGTH_SHORT).show()
+          finish()
+      }
+}
+```
+
+
+
+com/jarvis/assistant/ui/home/MainViewModel.kt
+```kotlin
+package com.jarvis.assistant.ui.home
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.jarvis.assistant.JarvisApp
+import com.jarvis.assistant.audio.AudioPlayer
+import com.jarvis.assistant.audio.AudioRecorder
+import com.jarvis.assistant.data.model.ConversationState
+import com.jarvis.assistant.data.preferences.AppPreferences
+import com.jarvis.assistant.data.repository.ChatRepository
+import com.jarvis.assistant.network.GeminiLiveWebSocket
+import com.jarvis.assistant.util.PromptGenerator
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+class MainViewModel(application: Application) : AndroidViewModel(application) {
+
+  private val preferences: AppPreferences = (application as JarvisApp).preferences
+  private val chatRepository: ChatRepository = (application as JarvisApp).chatRepository
+
+  private val _isSessionOn = MutableStateFlow(false)
+  val isSessionOn: StateFlow<Boolean> = _isSessionOn.asStateFlow()
+
+  private val _conversationState = MutableStateFlow(ConversationState.IDLE)
+  val conversationState: StateFlow<ConversationState> = _conversationState.asStateFlow()
+
+  private val _isMicMuted = MutableStateFlow(preferences.isMicMuted)
+  val isMicMuted: StateFlow<Boolean> = _isMicMuted.asStateFlow()
+
+  private val _connectionStatus = MutableStateFlow("READY")
+  val connectionStatus: StateFlow<String> = _connectionStatus.asStateFlow()
+
+  private val _audioLevel = MutableStateFlow(0f)
+  val audioLevel: StateFlow<Float> = _audioLevel.asStateFlow()
+
+  private val _liveTime = MutableStateFlow("")
+  val liveTime: StateFlow<String> = _liveTime.asStateFlow()
+
+  private val _personalityName = MutableStateFlow(preferences.personality)
+  val personalityName: StateFlow<String> = _personalityName.asStateFlow()
+
+  private val _eventFlow = MutableSharedFlow<String>()
+  val eventFlow: SharedFlow<String> = _eventFlow.asSharedFlow()
+
+  private var audioRecorder: AudioRecorder? = null
+private var audioPlayer: AudioPlayer? = null
+private var liveWebSocket: GeminiLiveWebSocket? = null
+
+private var timeClockJob: Job? = null
+private val currentTurnAssistantText = StringBuilder()
+private var lastUserSpeechDetectedTime = 0L
+
+init {
+   startTimeClock()
+}
+
+private fun startTimeClock() {
+   timeClockJob = viewModelScope.launch(Dispatchers.Default) {
+      val sdf = SimpleDateFormat("HH:mm", Locale.getDefault())
+      while (isActive) {
+        _liveTime.value = sdf.format(Date())
+        delay(1000)
+      }
+   }
+}
+
+fun refreshSettings() {
+  _personalityName.value = preferences.personality
+  _isMicMuted.value = preferences.isMicMuted
+  audioRecorder?.setMuted(preferences.isMicMuted)
+}
+
+fun toggleSession() {
+  if (_isSessionOn.value) {
+      stopSession()
+  } else {
+      startSession()
+  }
+}
+
+private fun startSession() {
+   val apiKey = preferences.apiKey.trim()
+   if (apiKey.isBlank()) {
+       viewModelScope.launch {
+          _eventFlow.emit("Please configure your Gemini API Key in Settings first.")
+       }
+       return
+   }
+_isSessionOn.value = true
+_conversationState.value = ConversationState.IDLE
+currentTurnAssistantText.clear()
+
+// 1. Output Player (24kHz Mono Output)
+audioPlayer = AudioPlayer(
+   onPlaybackStateChanged = { isPlaying ->
+      if (isPlaying) {
+          _conversationState.value = ConversationState.SPEAKING
+      } else {
+          finalizeTurn()
+          if (_isSessionOn.value) {
+              _conversationState.value = ConversationState.IDLE
+          }
+      }
+   },
+   onPlaybackAmplitude = { amp ->
+      if (_conversationState.value == ConversationState.SPEAKING) {
+          _audioLevel.value = amp
+      }
+   }
+).apply { start() }
+
+// 2. Gemini Live WebSocket Connection
+val systemPrompt = PromptGenerator.generateSystemPrompt(
+   personality = preferences.personality,
+   userName = preferences.userName
+)
+
+liveWebSocket = GeminiLiveWebSocket(
+   apiKey = apiKey,
+   model = preferences.aiModel,
+   voiceName = preferences.voice,
+   systemPrompt = systemPrompt,
+   listener = object : GeminiLiveWebSocket.Listener {
+       override fun onConnectionStateChanged(status: String) {
+         _connectionStatus.value = status
+         if (status == "LIVE" && _conversationState.value == ConversationState.IDLE) {
+             _conversationState.value = ConversationState.LISTENING
+         }
+       }
+
+    override fun onAudioDataReceived(pcmData: ByteArray) {
+      _conversationState.value = ConversationState.SPEAKING
+        audioPlayer?.enqueueAudio(pcmData)
+    }
+
+    override fun onAssistantTextReceived(textChunk: String) {
+      currentTurnAssistantText.append(textChunk)
+    }
+
+    override fun onInterrupted() {
+      audioPlayer?.flush()
+      currentTurnAssistantText.clear()
+      _conversationState.value = ConversationState.LISTENING
+    }
+
+    override fun onTurnCompleted() {
+      // Handled when audio finishes draining in audioPlayer
+    }
+
+    override fun onError(message: String) {
+      viewModelScope.launch {
+         _eventFlow.emit(message)
+      }
+    }
+   }
+).apply {
+   connect(viewModelScope)
+}
+
+// 3. Audio Recorder (16kHz Mono Input)
+audioRecorder = AudioRecorder { chunk, amplitude ->
+   if (_isSessionOn.value) {
+       liveWebSocket?.sendAudioChunk(chunk)
+
+    if (amplitude > 0.08f) {
+        lastUserSpeechDetectedTime = System.currentTimeMillis()
+        if (_conversationState.value != ConversationState.SPEAKING) {
+            _conversationState.value = ConversationState.LISTENING
+            _audioLevel.value = amplitude
+        }
+    } else if (_conversationState.value == ConversationState.LISTENING) {
+        _audioLevel.value = amplitude
+        val silentDuration = System.currentTimeMillis() - lastUserSpeechDetectedTime
+        if (silentDuration > 1500 && lastUserSpeechDetectedTime > 0) {
+            _conversationState.value = ConversationState.THINKING
+        }
+        }
+       }
+    }.apply {
+       setMuted(preferences.isMicMuted)
+       start(viewModelScope)
+    }
+}
+
+private fun finalizeTurn() {
+   val reply = currentTurnAssistantText.toString().trim()
+   if (reply.isNotEmpty()) {
+       chatRepository.addTurn(
+         userText = "Spoken user query",
+         jarvisText = reply
+       )
+       currentTurnAssistantText.clear()
+   }
+}
+
+private fun stopSession() {
+   _isSessionOn.value = false
+   finalizeTurn()
+
+    audioRecorder?.stop()
+    audioRecorder = null
+
+    audioPlayer?.flush()
+    audioPlayer?.release()
+    audioPlayer = null
+
+    liveWebSocket?.disconnect()
+    liveWebSocket = null
+
+    _conversationState.value = ConversationState.IDLE
+    _connectionStatus.value = "READY"
+    _audioLevel.value = 0f
+}
+
+fun toggleMicMute() {
+  val newMuted = !_isMicMuted.value
+  _isMicMuted.value = newMuted
+  preferences.isMicMuted = newMuted
+  audioRecorder?.setMuted(newMuted)
+  viewModelScope.launch {
+              _eventFlow.emit(if (newMuted) "Microphone Muted" else "Microphone Unmuted")
+          }
+      }
+
+      override fun onCleared() {
+        super.onCleared()
+        timeClockJob?.cancel()
+        stopSession()
+      }
+}
+```
+
+
+
+com/jarvis/assistant/ui/home/MainActivity.kt
+```kotlin
+package com.jarvis.assistant.ui.home
+
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.res.ColorStateList
+import android.os.Bundle
+import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import com.google.android.material.snackbar.Snackbar
+import com.jarvis.assistant.R
+import com.jarvis.assistant.data.model.ConversationState
+import com.jarvis.assistant.databinding.ActivityMainBinding
+import com.jarvis.assistant.ui.chat.ChatHistoryBottomSheet
+import com.jarvis.assistant.ui.orb.OrbHelper
+import com.jarvis.assistant.ui.settings.SettingsActivity
+import kotlinx.coroutines.launch
+
+class MainActivity : AppCompatActivity() {
+
+      private lateinit var binding: ActivityMainBinding
+      private val viewModel: MainViewModel by viewModels()
+private lateinit var orbHelper: OrbHelper
+
+private val requestAudioPermissionLauncher = registerForActivityResult(
+    ActivityResultContracts.RequestPermission()
+) { isGranted: Boolean ->
+    if (isGranted) {
+        viewModel.toggleSession()
+    } else {
+        Toast.makeText(
+           this,
+           "Microphone permission is required for voice conversation.",
+           Toast.LENGTH_LONG
+        ).show()
+    }
+}
+
+override fun onCreate(savedInstanceState: Bundle?) {
+  super.onCreate(savedInstanceState)
+  binding = ActivityMainBinding.inflate(layoutInflater)
+  setContentView(binding.root)
+
+    setupOrb()
+    setupListeners()
+    observeViewModel()
+}
+
+override fun onResume() {
+  super.onResume()
+  viewModel.refreshSettings()
+}
+
+private fun setupOrb() {
+   orbHelper = OrbHelper(binding.webViewOrb)
+   orbHelper.setup()
+}
+
+private fun setupListeners() {
+   binding.btnSettings.setOnClickListener {
+      val intent = Intent(this, SettingsActivity::class.java)
+      startActivity(intent)
+   }
+
+    binding.btnPowerSession.setOnClickListener {
+       if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+             == PackageManager.PERMISSION_GRANTED
+        ){
+           viewModel.toggleSession()
+        } else {
+           requestAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    binding.btnMicMute.setOnClickListener {
+       viewModel.toggleMicMute()
+    }
+
+    binding.tvViewHistory.setOnClickListener {
+       showChatHistory()
+    }
+
+    binding.boxJarvisTitle.setOnClickListener {
+       showChatHistory()
+    }
+}
+
+private fun showChatHistory() {
+   ChatHistoryBottomSheet.newInstance().show(
+     supportFragmentManager,
+     ChatHistoryBottomSheet.TAG
+   )
+}
+
+private fun observeViewModel() {
+   lifecycleScope.launch {
+       repeatOnLifecycle(Lifecycle.State.STARTED) {
+         launch {
+            viewModel.liveTime.collect { time ->
+               binding.tvLiveTime.text = time
+            }
+         }
+
+             launch {
+                viewModel.personalityName.collect { personality ->
+                   binding.tvPersonalityMode.text = personality
+                }
+             }
+
+             launch {
+                viewModel.isSessionOn.collect { isOn ->
+                   updatePowerButtonUi(isOn)
+                }
+            }
+
+            launch {
+               viewModel.isMicMuted.collect { isMuted ->
+                  updateMicMuteUi(isMuted)
+               }
+            }
+
+            launch {
+               viewModel.conversationState.collect { state ->
+                  updateConversationStateUi(state)
+               }
+            }
+
+            launch {
+               viewModel.audioLevel.collect { level ->
+                  orbHelper.updateAudioLevel(level)
+               }
+            }
+
+            launch {
+               viewModel.connectionStatus.collect { status ->
+                  updateConnectionStatusUi(status)
+               }
+            }
+
+            launch {
+               viewModel.eventFlow.collect { message ->
+                  Snackbar.make(binding.root, message, Snackbar.LENGTH_LONG).show()
+               }
+            }
+        }
+    }
+}
+
+private fun updatePowerButtonUi(isOn: Boolean) {
+   if (isOn) {
+       binding.btnPowerSession.setBackgroundResource(R.drawable.bg_power_button)
+       binding.ivPowerIcon.imageTintList = ColorStateList.valueOf(
+          ContextCompat.getColor(this, R.color.primary_cyan)
+       )
+       binding.tvPowerText.text = getString(R.string.btn_on)
+       binding.tvPowerText.setTextColor(
+          ContextCompat.getColor(this, R.color.primary_cyan)
+       )
+    } else {
+       binding.btnPowerSession.setBackgroundResource(R.drawable.bg_power_button_off)
+       binding.ivPowerIcon.imageTintList = ColorStateList.valueOf(
+          ContextCompat.getColor(this, R.color.text_muted)
+       )
+       binding.tvPowerText.text = getString(R.string.btn_off)
+       binding.tvPowerText.setTextColor(
+          ContextCompat.getColor(this, R.color.text_muted)
+       )
+    }
+}
+
+private fun updateMicMuteUi(isMuted: Boolean) {
+   if (isMuted) {
+       binding.btnMicMute.setImageResource(R.drawable.ic_mic_off)
+       binding.btnMicMute.imageTintList = ColorStateList.valueOf(
+          ContextCompat.getColor(this, R.color.status_red)
+       )
+   } else {
+       binding.btnMicMute.setImageResource(R.drawable.ic_mic)
+       binding.btnMicMute.imageTintList = ColorStateList.valueOf(
+          ContextCompat.getColor(this, R.color.primary_cyan)
+       )
+   }
+}
+
+private fun updateConversationStateUi(state: ConversationState) {
+   binding.tvConversationState.text = state.displayName
+   val colorRes = when (state) {
+      ConversationState.IDLE -> R.color.text_secondary
+      ConversationState.LISTENING -> R.color.primary_cyan
+      ConversationState.THINKING -> R.color.purple_glow
+      ConversationState.SPEAKING -> R.color.neon_blue
+   }
+   binding.tvConversationState.setTextColor(ContextCompat.getColor(this, colorRes))
+   orbHelper.updateState(state)
+}
+
+private fun updateConnectionStatusUi(status: String) {
+   binding.tvConnectionStatus.text = status
+      val dotColor = when (status) {
+         "LIVE" -> ContextCompat.getColor(this, R.color.status_green)
+         "CONNECTING...", "RECONNECTING..." -> ContextCompat.getColor(this,
+R.color.status_amber)
+         else -> ContextCompat.getColor(this, R.color.text_muted)
+      }
+      binding.viewStatusDot.backgroundTintList = ColorStateList.valueOf(dotColor)
+    }
+}
+```
+
+---
+
+
+
+
+11. AI Pitfalls & Antipatterns Checklist
+When handing this PRD to Codex, Claude, Antigravity, or any coding agent, verify that it does
+NOT commit any of these 8 fatal mistakes:
+
+| Error | Root Cause | Fatal Result | Solution Specified in PRD |
+|---|---|---|---|
+| **1. Sending `mediaChunks`** | Using old Gemini 1.0 JSON format | Close Code `1007`
+instantly | Must use `realtimeInput.audio` with single `audio` object |
+| **2. Wrong Model Name** | Using `gemini-1.5-pro` or `gemini-2.0-flash-exp` | Close Code
+`1008` (Model not supported) | Use `models/gemini-2.5-flash-native-audio-preview-12-2025` |
+| **3. AudioTrack at 16kHz** | Assuming output matches input sample rate | Speech sounds
+slow and robotic | Set `AudioTrack` sample rate strictly to **`24000` Hz** |
+| **4. Sending JSON `{}` ping** | Adding a manual client heartbeat loop | Close Code `1007`
+(Protocol error) | Rely solely on OkHttp's `.pingInterval(8, TimeUnit.SECONDS)` RFC 6455
+transport ping |
+| **5. Missing Echo Cancellation** | Using `AudioSource.MIC` or `DEFAULT` | Assistant talks to
+itself in infinite feedback loop | Use `MediaRecorder.AudioSource.VOICE_COMMUNICATION`
+with hardware AEC |
+| **6. Missing Low Latency Track** | Using `MODE_STATIC` or default AudioTrack | High latency
+(>2000ms delay) | Use `MODE_STREAM` with `PERFORMANCE_MODE_LOW_LATENCY`
+into FastMixer |
+| **7. External JS dependencies** | Attempting to import CDN three.js in offline WebView | Blank
+screen or crash on no internet | Use self-contained HTML5 Canvas visualizer in `index.html` |
+| **8. Missing Mic Permission** | Forgetting runtime permission before `startRecording()` |
+SecurityException / silent crash | ActivityResultLauncher requests `RECORD_AUDIO` on Power
+tap |
+
+---
+12. Verification & Build Protocol
+
+
+A. Build from Terminal
+
+B. Functional Verification Walkthrough
+# Clean and assemble debug APK
+./gradlew assembleDebug
+
+# Install to connected device or emulator
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+### B. Functional Verification Walkthrough
+1. **Launch App:** App opens with dark sci-fi theme, clock updating, and status showing
+`READY`.
+2. **Configure API Key:**
+  - Tap top-right Gear icon $\to$ `SettingsActivity` opens.
+  - Paste valid Google Gemini API Key.
+  - Select Voice (e.g. `Aoede`) and Personality (e.g. `Assistant Mode`).
+  - Tap **Save** $\to$ Toast confirms save and returns to Home screen.
+3. **Connect & Speak:**
+  - Tap center **Power Button** $\to$ Grant microphone permission if prompted.
+  - Power button turns glowing Cyan with label `ON`.
+  - Status transitions: `CONNECTING...` $\to$ `LIVE`.
+  - Conversation state displays: `LISTENING`.
+  - Speak naturally: *"What is the distance between Earth and Mars?"*
+4. **Listen to Assistant Speech:**
+  - Visualizer state transitions: `LISTENING` $\to$ `THINKING` $\to$ `SPEAKING`.
+  - Spoken audio plays with human-like voice at 24kHz with crystal-clear fidelity.
+  - The Orb expands and pulses dynamically matching the spoken words.
+5. **Barge-in Interruption:**
+  - Interrupt while the assistant is speaking by saying: *"Stop, tell me a joke instead!"*
+  - Audio playback immediately flushes, state resets to `LISTENING`, and assistant answers the
+new prompt.
+6. **Chat History:**
+  - Tap `History` or top `JARVIS` pill $\to$ Bottom sheet opens showing all turns with
+timestamps.
+
